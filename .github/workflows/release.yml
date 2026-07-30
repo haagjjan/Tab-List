@@ -1,0 +1,321 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Semantic version, for example 1.0.0
+        required: true
+        type: string
+      build_number:
+        description: Monotonically increasing integer build number
+        required: true
+        type: string
+      prerelease:
+        description: Publish as a GitHub pre-release
+        required: true
+        default: true
+        type: boolean
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  compatibility-test:
+    name: Release tests (${{ matrix.os }}, Apple Silicon)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-15
+          - macos-26
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install and verify XcodeGen
+        run: |
+          set -euo pipefail
+          brew install xcodegen
+          version="$(xcodegen --version)"
+          [[ "$version" == "Version: 2.46.0" ]] || {
+            echo "::error::Expected XcodeGen 2.46.0, found ${version}"
+            exit 1
+          }
+
+      - name: Select Xcode 26
+        run: Scripts/select_xcode_26.sh
+
+      - name: Build and test
+        env:
+          DERIVED_DATA_PATH: ${{ runner.temp }}/TabListDerivedData
+          RESULT_BUNDLE_PATH: ${{ runner.temp }}/TabListTests.xcresult
+        run: Scripts/ci.sh
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: Release-TabListTests-${{ matrix.os }}
+          path: ${{ runner.temp }}/TabListTests.xcresult
+          if-no-files-found: ignore
+          retention-days: 30
+
+  release:
+    name: Sign, notarize, and publish
+    needs: compatibility-test
+    runs-on: macos-26
+    timeout-minutes: 60
+    environment: release
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Install and verify XcodeGen
+        run: |
+          set -euo pipefail
+          brew install xcodegen
+          version="$(xcodegen --version)"
+          [[ "$version" == "Version: 2.46.0" ]] || {
+            echo "::error::Expected XcodeGen 2.46.0, found ${version}"
+            exit 1
+          }
+
+      - name: Select Xcode 26
+        run: Scripts/select_xcode_26.sh
+
+      - name: Resolve release metadata
+        id: release
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_BUILD_NUMBER: ${{ inputs.build_number }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          source Scripts/common.sh
+
+          default_ref="refs/heads/${DEFAULT_BRANCH}"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            [[ "$GITHUB_REF" == "$default_ref" ]] || {
+              echo "::error::Manual releases must run from ${default_ref}, not ${GITHUB_REF}"
+              exit 1
+            }
+          else
+            git merge-base --is-ancestor "$GITHUB_SHA" "origin/${DEFAULT_BRANCH}" || {
+              echo "::error::Release tags must point to a commit reachable from ${DEFAULT_BRANCH}"
+              exit 1
+            }
+          fi
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            build_number="${GITHUB_RUN_NUMBER}"
+            if [[ "$version" == *-* ]]; then
+              prerelease=true
+            else
+              prerelease=false
+            fi
+          else
+            version="${INPUT_VERSION}"
+            build_number="${INPUT_BUILD_NUMBER}"
+            prerelease="${INPUT_PRERELEASE}"
+            if [[ "$version" == *-* ]]; then
+              prerelease=true
+            fi
+          fi
+          validate_version "$version"
+          validate_build_number "$build_number"
+          {
+            echo "version=$version"
+            echo "build_number=$build_number"
+            echo "prerelease=$prerelease"
+            echo "tag=v$version"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Enforce monotonically increasing Sparkle build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_BUILD_NUMBER: ${{ steps.release.outputs.build_number }}
+        run: |
+          set -euo pipefail
+          releases="$RUNNER_TEMP/releases.json"
+          previous_appcast="$RUNNER_TEMP/previous-appcast.xml"
+          gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$releases"
+          asset_id="$(
+            jq -r \
+              '[.[] | select(.draft == false) | .assets[] | select(.name == "appcast.xml")][0].id // empty' \
+              "$releases"
+          )"
+          if [[ -z "$asset_id" ]]; then
+            echo "No previous published appcast found; treating this as the first release."
+          else
+            gh api \
+              --header "Accept: application/octet-stream" \
+              "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" > "$previous_appcast"
+            Scripts/check_release_monotonic.sh \
+              "$NEW_BUILD_NUMBER" \
+              "$previous_appcast"
+          fi
+
+      - name: Validate required secrets
+        env:
+          CERTIFICATE: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+          IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
+          NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+          NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          SPARKLE_PUBLIC_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY_BASE64 }}
+        run: |
+          set -euo pipefail
+          for name in \
+            CERTIFICATE CERTIFICATE_PASSWORD TEAM IDENTITY \
+            NOTARY_KEY NOTARY_KEY_ID NOTARY_ISSUER_ID \
+            SPARKLE_PUBLIC_KEY SPARKLE_PRIVATE_KEY
+          do
+            [[ -n "${!name}" ]] || {
+              echo "::error::Required release secret for $name is missing"
+              exit 1
+            }
+          done
+
+      - name: Import Developer ID certificate
+        env:
+          CERTIFICATE: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/tablist-signing.keychain-db"
+          certificate="$RUNNER_TEMP/developer-id.p12"
+          password="$(openssl rand -hex 24)"
+          printf '%s' "$CERTIFICATE" | base64 --decode > "$certificate"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$certificate" -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          rm -f "$certificate"
+
+      - name: Prepare private release keys
+        env:
+          NOTARY_KEY: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_ED_KEY_BASE64 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s' "$NOTARY_KEY" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          printf '%s' "$SPARKLE_PRIVATE_KEY" | base64 --decode > "$RUNNER_TEMP/sparkle-private-key"
+
+      - name: Validate generated artifacts
+        run: |
+          set -euo pipefail
+          xcodegen generate --spec project.yml
+          Scripts/generate_app_icons.swift \
+            Resources/Artwork/TabList-AppIcon-Source.png \
+            Resources/TabList/Assets.xcassets/AppIcon.appiconset
+          git diff --exit-code -- TabList.xcodeproj Resources/TabList/Assets.xcassets/AppIcon.appiconset
+
+      - name: Archive signed application
+        env:
+          DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+          CODE_SIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
+          MARKETING_VERSION: ${{ steps.release.outputs.version }}
+          BUILD_NUMBER: ${{ steps.release.outputs.build_number }}
+          SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
+          ARCHIVE_PATH: ${{ runner.temp }}/TabList.xcarchive
+          DERIVED_DATA_PATH: ${{ runner.temp }}/TabListDerivedData
+        run: Scripts/archive.sh
+
+      - name: Notarize and staple application
+        env:
+          NOTARY_KEY_PATH: ${{ runner.temp }}/AuthKey.p8
+          NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: Scripts/notarize.sh "$RUNNER_TEMP/TabList.xcarchive/Products/Applications/TabList.app"
+
+      - name: Package release artifacts
+        env:
+          CODE_SIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/artifacts" "$RUNNER_TEMP/updates"
+          Scripts/package_release.sh \
+            "$RUNNER_TEMP/TabList.xcarchive/Products/Applications/TabList.app" \
+            "${{ steps.release.outputs.version }}" \
+            "$RUNNER_TEMP/artifacts"
+          cp "$RUNNER_TEMP/artifacts/TabList-${{ steps.release.outputs.version }}.zip" "$RUNNER_TEMP/updates/"
+
+      - name: Notarize and staple disk image
+        env:
+          NOTARY_KEY_PATH: ${{ runner.temp }}/AuthKey.p8
+          NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: Scripts/notarize.sh "$RUNNER_TEMP/artifacts/TabList-${{ steps.release.outputs.version }}.dmg"
+
+      - name: Generate signed Sparkle appcast
+        env:
+          DERIVED_DATA_PATH: ${{ runner.temp }}/TabListDerivedData
+          SPARKLE_PRIVATE_ED_KEY_FILE: ${{ runner.temp }}/sparkle-private-key
+          DOWNLOAD_URL_PREFIX: https://github.com/haagjjan/Tab-List/releases/download/${{ steps.release.outputs.tag }}/
+        run: |
+          set -euo pipefail
+          Scripts/generate_appcast.sh "$RUNNER_TEMP/updates"
+          cp "$RUNNER_TEMP/updates/appcast.xml" "$RUNNER_TEMP/artifacts/appcast.xml"
+
+      - name: Verify signed update and release metadata
+        env:
+          DERIVED_DATA_PATH: ${{ runner.temp }}/TabListDerivedData
+          EXPECTED_MARKETING_VERSION: ${{ steps.release.outputs.version }}
+          EXPECTED_BUILD_NUMBER: ${{ steps.release.outputs.build_number }}
+          EXPECTED_DOWNLOAD_URL: https://github.com/haagjjan/Tab-List/releases/download/${{ steps.release.outputs.tag }}/TabList-${{ steps.release.outputs.version }}.zip
+          SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
+          SPARKLE_PRIVATE_ED_KEY_FILE: ${{ runner.temp }}/sparkle-private-key
+        run: |
+          Scripts/verify_release.sh \
+            "$RUNNER_TEMP/TabList.xcarchive/Products/Applications/TabList.app" \
+            "$RUNNER_TEMP/artifacts/TabList-${{ steps.release.outputs.version }}.zip" \
+            "$RUNNER_TEMP/artifacts/appcast.xml"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          flags=(--generate-notes --title "Tab-List ${{ steps.release.outputs.version }}")
+          if [[ "${{ steps.release.outputs.prerelease }}" == "true" ]]; then
+            flags+=(--prerelease)
+          fi
+          gh release create \
+            "${{ steps.release.outputs.tag }}" \
+            "$RUNNER_TEMP/artifacts/"* \
+            --target "$GITHUB_SHA" \
+            "${flags[@]}"
+
+      - name: Remove private keys
+        if: always()
+        run: |
+          rm -f \
+            "$RUNNER_TEMP/AuthKey.p8" \
+            "$RUNNER_TEMP/sparkle-private-key" \
+            "$RUNNER_TEMP/developer-id.p12"
+          security delete-keychain "$RUNNER_TEMP/tablist-signing.keychain-db" 2>/dev/null || true

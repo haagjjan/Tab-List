@@ -1,0 +1,86 @@
+name: Bug report
+description: Report incorrect switching, compatibility, performance, or UI behavior.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve Tab-List. Do not paste window titles or screenshots containing private information.
+  - type: input
+    id: version
+    attributes:
+      label: Tab-List version
+      placeholder: 1.0.0 (42)
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and build
+      placeholder: macOS 26.4 (25E246)
+    validations:
+      required: true
+  - type: dropdown
+    id: accessibility
+    attributes:
+      label: Accessibility permission
+      options:
+        - Granted
+        - Denied
+        - Unknown
+    validations:
+      required: true
+  - type: dropdown
+    id: screen_recording
+    attributes:
+      label: Screen Recording permission
+      options:
+        - Granted
+        - Denied
+        - Not requested
+        - Unknown
+    validations:
+      required: true
+  - type: textarea
+    id: displays_spaces
+    attributes:
+      label: Display and Space configuration
+      description: Include display count, Stage Manager state, and whether displays have separate Spaces.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Open …
+        2. Press …
+        3. Observe …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Redacted diagnostics
+      description: Attach only the diagnostics exported by Tab-List. Review it before posting.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I removed private window titles, personal data, and credentials.
+          required: true

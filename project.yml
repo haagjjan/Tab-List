@@ -1,0 +1,233 @@
+name: TabList
+
+options:
+  bundleIdPrefix: com.haagjjan
+  createIntermediateGroups: true
+  deploymentTarget:
+    macOS: "15.0"
+  developmentLanguage: en
+  groupSortPosition: top
+  minimumXcodeGenVersion: 2.46.0
+  xcodeVersion: "26.0"
+
+configs:
+  Debug: debug
+  Release: release
+
+settings:
+  base:
+    ARCHS: arm64
+    CLANG_ENABLE_MODULES: YES
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_HARDENED_RUNTIME: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    MACOSX_DEPLOYMENT_TARGET: "15.0"
+    ONLY_ACTIVE_ARCH: NO
+    SWIFT_STRICT_CONCURRENCY: complete
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
+    SWIFT_VERSION: "6.0"
+  configs:
+    Debug:
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+    Release:
+      COPY_PHASE_STRIP: YES
+      DEAD_CODE_STRIPPING: YES
+      SWIFT_COMPILATION_MODE: wholemodule
+
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.9.4
+
+fileGroups:
+  - README.md
+  - IMPLEMENTATION_PLAN.md
+  - PRIVACY.md
+  - SECURITY.md
+  - CONTRIBUTING.md
+  - THIRD_PARTY_NOTICES.md
+  - LICENSE
+  - Scripts
+  - Resources/Artwork
+  - reference
+
+targets:
+  TabListCore:
+    type: framework
+    platform: macOS
+    sources:
+      - path: Sources/TabListCore
+    settings:
+      base:
+        DEFINES_MODULE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.haagjjan.TabListCore
+        PRODUCT_MODULE_NAME: TabListCore
+        SKIP_INSTALL: YES
+    scheme:
+      testTargets:
+        - TabListCoreTests
+
+  TabList:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/TabList
+      - path: Resources/TabList/Assets.xcassets
+        buildPhase: resources
+      - path: LICENSE
+        buildPhase: resources
+      - path: PRIVACY.md
+        buildPhase: resources
+      - path: THIRD_PARTY_NOTICES.md
+        buildPhase: resources
+      - path: Resources/Legal/Sparkle-LICENSE.txt
+        buildPhase: resources
+    info:
+      path: Config/TabList-Info.plist
+      properties:
+        CFBundleDevelopmentRegion: "$(DEVELOPMENT_LANGUAGE)"
+        CFBundleDisplayName: "Tab-List"
+        CFBundleExecutable: "$(EXECUTABLE_NAME)"
+        CFBundleIdentifier: "$(PRODUCT_BUNDLE_IDENTIFIER)"
+        CFBundleInfoDictionaryVersion: "6.0"
+        CFBundleName: "$(PRODUCT_NAME)"
+        CFBundlePackageType: APPL
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        LSMinimumSystemVersion: "$(MACOSX_DEPLOYMENT_TARGET)"
+        LSUIElement: true
+        NSHumanReadableCopyright: "Copyright © 2026 Jan Haag. Released under the MIT License."
+        NSScreenCaptureUsageDescription: "Tab-List captures scaled previews of open windows when Thumbnail mode is enabled."
+        SUEnableAutomaticChecks: true
+        SUEnableSystemProfiling: false
+        SUFeedURL: "https://github.com/haagjjan/Tab-List/releases/latest/download/appcast.xml"
+        SUPublicEDKey: "$(SPARKLE_PUBLIC_ED_KEY)"
+    entitlements:
+      path: Config/TabList.entitlements
+    dependencies:
+      - target: TabListCore
+      - package: Sparkle
+    settings:
+      base:
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CURRENT_PROJECT_VERSION: 1
+        DEVELOPMENT_TEAM: ""
+        ENABLE_APP_SANDBOX: NO
+        INFOPLIST_KEY_CFBundleDisplayName: "Tab-List"
+        MARKETING_VERSION: 1.0.0
+        PRODUCT_BUNDLE_IDENTIFIER: com.haagjjan.TabList
+        PRODUCT_MODULE_NAME: TabList
+        PRODUCT_NAME: TabList
+        SPARKLE_PUBLIC_ED_KEY: ""
+      configs:
+        Debug:
+          CODE_SIGN_IDENTITY: "-"
+        Release:
+          CODE_SIGN_IDENTITY: "Developer ID Application"
+    scheme:
+      gatherCoverageData: true
+      testTargets:
+        - TabListCoreTests
+        - TabListTests
+        - TabListUITests
+
+  WindowFixture:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/WindowFixture
+    info:
+      path: Config/WindowFixture-Info.plist
+    settings:
+      base:
+        CODE_SIGN_IDENTITY: "-"
+        CURRENT_PROJECT_VERSION: 1
+        ENABLE_APP_SANDBOX: NO
+        MARKETING_VERSION: 1.0
+        PRODUCT_BUNDLE_IDENTIFIER: com.haagjjan.TabList.WindowFixture
+        PRODUCT_MODULE_NAME: WindowFixture
+        PRODUCT_NAME: WindowFixture
+    scheme:
+      testTargets:
+        - WindowFixtureUITests
+
+  TabListCoreTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests/TabListCoreTests
+    dependencies:
+      - target: TabListCore
+    settings:
+      base:
+        CODE_SIGNING_ALLOWED: NO
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.haagjjan.TabListCoreTests
+
+  TabListTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests/TabListTests
+    dependencies:
+      - target: TabList
+    settings:
+      base:
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        CODE_SIGN_IDENTITY: "-"
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.haagjjan.TabListTests
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/TabList.app/Contents/MacOS/TabList"
+
+  TabListUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: Tests/TabListUITests
+    dependencies:
+      - target: TabList
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.haagjjan.TabListUITests
+        TEST_TARGET_NAME: TabList
+
+  WindowFixtureUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: Tests/WindowFixtureUITests
+    dependencies:
+      - target: WindowFixture
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.haagjjan.TabList.WindowFixtureUITests
+        TEST_TARGET_NAME: WindowFixture
+
+schemes:
+  TabList-CI:
+    build:
+      targets:
+        TabList: all
+        TabListCore: all
+        TabListCoreTests: [test]
+        TabListTests: [test]
+        TabListUITests: [test]
+        WindowFixture: all
+        WindowFixtureUITests: [test]
+    test:
+      gatherCoverageData: true
+      targets:
+        - name: TabListCoreTests
+          parallelizable: true
+        - name: TabListTests
+          parallelizable: true
+        - name: TabListUITests
+          parallelizable: false
+        - name: WindowFixtureUITests
+          parallelizable: false
+      environmentVariables:
+        TABLIST_DISABLE_GLOBAL_SHORTCUT: "1"
+    archive:
+      config: Release

@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test (${{ matrix.os }}, Apple Silicon)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-15
+          - macos-26
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Install and verify XcodeGen
+        run: |
+          set -euo pipefail
+          brew install xcodegen
+          version="$(xcodegen --version)"
+          [[ "$version" == "Version: 2.46.0" ]] || {
+            echo "::error::Expected XcodeGen 2.46.0, found ${version}"
+            exit 1
+          }
+
+      - name: Select Xcode 26
+        run: Scripts/select_xcode_26.sh
+
+      - name: Validate project metadata
+        run: |
+          set -euo pipefail
+          plutil -lint Config/*.plist Config/*.entitlements
+          jq empty Resources/TabList/Assets.xcassets/Contents.json
+          jq empty Resources/TabList/Assets.xcassets/AppIcon.appiconset/Contents.json
+          jq empty Resources/TabList/Assets.xcassets/AccentColor.colorset/Contents.json
+
+      - name: Validate generated artifacts
+        if: matrix.os == 'macos-26'
+        run: |
+          set -euo pipefail
+          xcodegen generate --spec project.yml
+          Scripts/generate_app_icons.swift \
+            Resources/Artwork/TabList-AppIcon-Source.png \
+            Resources/TabList/Assets.xcassets/AppIcon.appiconset
+          git diff --exit-code -- TabList.xcodeproj Resources/TabList/Assets.xcassets/AppIcon.appiconset
+
+      - name: Build and test
+        env:
+          DERIVED_DATA_PATH: ${{ runner.temp }}/TabListDerivedData
+          RESULT_BUNDLE_PATH: ${{ runner.temp }}/TabListTests.xcresult
+        run: Scripts/ci.sh
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: TabListTests-${{ matrix.os }}
+          path: ${{ runner.temp }}/TabListTests.xcresult
+          if-no-files-found: ignore
+          retention-days: 14
