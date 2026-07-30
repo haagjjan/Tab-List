@@ -4,6 +4,68 @@ import Foundation
 import OSLog
 import TabListCore
 
+private struct BackgroundThumbnailFingerprint: Equatable, Sendable {
+    let incarnation: UInt64
+    let title: String
+    let bounds: CGRect
+    let isMinimized: Bool
+    let isHidden: Bool
+    let isFullscreen: Bool
+
+    init(_ window: WindowRecord) {
+        incarnation = window.incarnation
+        title = window.windowTitle
+        bounds = window.bounds
+        isMinimized = window.isMinimized
+        isHidden = window.isHidden
+        isFullscreen = window.isFullscreen
+    }
+}
+
+struct BackgroundThumbnailRefreshTracker: Sendable {
+    private struct Entry: Sendable {
+        let fingerprint: BackgroundThumbnailFingerprint
+        let capturedAt: ContinuousClock.Instant
+    }
+
+    private var entries: [WindowKey: Entry] = [:]
+
+    mutating func candidates(
+        from windows: [WindowRecord],
+        at now: ContinuousClock.Instant,
+        stableRefreshInterval: Duration
+    ) -> [WindowRecord] {
+        let retainedKeys = Set(windows.map(\.id))
+        entries = entries.filter { retainedKeys.contains($0.key) }
+
+        return windows.filter { window in
+            guard let entry = entries[window.id] else { return true }
+            if entry.fingerprint != BackgroundThumbnailFingerprint(window) {
+                return true
+            }
+            return entry.capturedAt.duration(to: now)
+                >= stableRefreshInterval
+        }
+    }
+
+    mutating func recordCaptured(
+        _ keys: Set<WindowKey>,
+        from windows: [WindowRecord],
+        at now: ContinuousClock.Instant
+    ) {
+        for window in windows where keys.contains(window.id) {
+            entries[window.id] = Entry(
+                fingerprint: BackgroundThumbnailFingerprint(window),
+                capturedAt: now
+            )
+        }
+    }
+
+    mutating func reset() {
+        entries.removeAll(keepingCapacity: true)
+    }
+}
+
 /// Main-actor orchestration around the pure switcher reducer.
 ///
 /// The coordinator never asks WindowServer or Accessibility for data on the
@@ -22,12 +84,14 @@ final class SwitcherSessionCoordinator {
     private let focusHistoryProvider: any WindowFocusHistoryProviding
     private let windowActions: any WindowActuating
     private let shortcutService: GlobalShortcutService
-    private let iconCache: AppIconCache
+    private let iconCache: any AppIconProviding
     private let panelController: SwitcherPanelController
     private let settingsProvider: () -> SettingsV1
+    private let thumbnailFactory: () -> any ThumbnailProviding
+    private let backgroundRefreshClock = ContinuousClock()
 
     private var state = SwitcherSessionState()
-    private var thumbnailService: ThumbnailService?
+    private var thumbnailService: (any ThumbnailProviding)?
     private var preparationTask: Task<Void, Never>?
     private var renderingTask: Task<Void, Never>?
     private var captureTask: Task<Void, Never>?
@@ -40,17 +104,23 @@ final class SwitcherSessionCoordinator {
     private var queuedDirectionsBeforeBegin: [SwitcherDirection] = []
     private var commitWhenPrepared = false
     private var prefetchedOpeningSnapshot: WindowSnapshot?
+    private var sessionPointerDisplayID: CGDirectDisplayID?
     private var appearanceSignpost: OSSignpostIntervalState?
     private var thumbnailCaptureIsAuthorized = false
+    private var backgroundThumbnailTracker =
+        BackgroundThumbnailRefreshTracker()
 
     init(
         snapshotProvider: any WindowSnapshotProviding,
         focusHistoryProvider: any WindowFocusHistoryProviding,
         windowActions: any WindowActuating,
         shortcutService: GlobalShortcutService,
-        iconCache: AppIconCache,
+        iconCache: any AppIconProviding,
         panelController: SwitcherPanelController,
-        settingsProvider: @escaping () -> SettingsV1
+        settingsProvider: @escaping () -> SettingsV1,
+        thumbnailFactory: @escaping () -> any ThumbnailProviding = {
+            ThumbnailService()
+        }
     ) {
         self.snapshotProvider = snapshotProvider
         self.focusHistoryProvider = focusHistoryProvider
@@ -59,6 +129,7 @@ final class SwitcherSessionCoordinator {
         self.iconCache = iconCache
         self.panelController = panelController
         self.settingsProvider = settingsProvider
+        self.thumbnailFactory = thumbnailFactory
 
         panelController.onActivate = { [weak self] key in
             self?.activateFromPointer(key)
@@ -112,6 +183,7 @@ final class SwitcherSessionCoordinator {
             focusResolutionTask = nil
             queuedDirectionsBeforeBegin.removeAll(keepingCapacity: true)
             commitWhenPrepared = false
+            sessionPointerDisplayID = nil
             sessionGeneration &+= 1
             shortcutService.setSessionActive(false)
             endAppearanceSignpost()
@@ -157,6 +229,7 @@ final class SwitcherSessionCoordinator {
         captureTask = nil
         backgroundRefreshTask?.cancel()
         backgroundRefreshTask = nil
+        backgroundThumbnailTracker.reset()
         renderingTask?.cancel()
         renderingTask = nil
 
@@ -201,8 +274,14 @@ final class SwitcherSessionCoordinator {
     }
 
     func updateBackgroundRefresh(enabled: Bool) {
+        let shouldCancelBackgroundCaptures =
+            backgroundRefreshTask != nil && !isActive
         backgroundRefreshTask?.cancel()
         backgroundRefreshTask = nil
+        backgroundThumbnailTracker.reset()
+        if shouldCancelBackgroundCaptures, let thumbnailService {
+            Task { await thumbnailService.cancelPending() }
+        }
         let settings = settingsProvider()
         guard enabled,
               thumbnailCaptureIsAuthorized,
@@ -237,14 +316,26 @@ final class SwitcherSessionCoordinator {
                         with: snapshot.visibleSpaceIDs
                     )
                 }
-                let keys = Array(visible.prefix(24).map(\.id))
+                let boundedVisible = Array(visible.prefix(24))
+                let changed = self.backgroundThumbnailTracker.candidates(
+                    from: boundedVisible,
+                    at: self.backgroundRefreshClock.now,
+                    stableRefreshInterval: .seconds(300)
+                )
+                let keys = changed.map(\.id)
                 guard !keys.isEmpty else { continue }
-                await service.refresh(
-                    Array(visible.prefix(24)),
+                let captured = await service.refresh(
+                    changed,
                     priority: keys,
                     targetSize: Self.thumbnailTargetSize(
                         for: self.settingsProvider().panelSize
                     )
+                )
+                guard !Task.isCancelled, !self.isActive else { continue }
+                self.backgroundThumbnailTracker.recordCaptured(
+                    captured,
+                    from: boundedVisible,
+                    at: self.backgroundRefreshClock.now
                 )
             }
         }
@@ -252,6 +343,7 @@ final class SwitcherSessionCoordinator {
 
     func handleMemoryPressure() {
         iconCache.purgeMemory()
+        backgroundThumbnailTracker.reset()
         captureTask?.cancel()
         captureTask = nil
         guard let thumbnailService else { return }
@@ -265,9 +357,11 @@ final class SwitcherSessionCoordinator {
         queuedDirectionsBeforeBegin.removeAll()
         commitWhenPrepared = false
         prefetchedOpeningSnapshot = nil
+        sessionPointerDisplayID = nil
         stopSessionWork()
         backgroundRefreshTask?.cancel()
         backgroundRefreshTask = nil
+        backgroundThumbnailTracker.reset()
         panelController.hide()
         shortcutService.setSessionActive(false)
         endAppearanceSignpost()
@@ -285,6 +379,7 @@ final class SwitcherSessionCoordinator {
         resolvingInitialFocus = true
         queuedDirectionsBeforeBegin.removeAll(keepingCapacity: true)
         commitWhenPrepared = false
+        sessionPointerDisplayID = Self.pointerDisplayID()
 
         let frontmostPID = NSWorkspace.shared.frontmostApplication?
             .processIdentifier
@@ -364,6 +459,7 @@ final class SwitcherSessionCoordinator {
         execute(effects)
 
         if state.phase == .idle {
+            sessionPointerDisplayID = nil
             shortcutService.setSessionActive(false)
             stopSessionWork()
             endAppearanceSignpost()
@@ -419,36 +515,63 @@ final class SwitcherSessionCoordinator {
         preparationTask?.cancel()
         let generation = sessionGeneration
         let settings = settingsProvider()
-        let pointerDisplayID = Self.pointerDisplayID()
+        let pointerDisplayID = sessionPointerDisplayID
         let currentWindowKey = state.originalFocus?.windowKey
 
+        let hadPrefetchedSnapshot = prefetchedOpeningSnapshot != nil
+        let validPrefetchedSnapshot = prefetchedOpeningSnapshot.flatMap {
+            WindowSnapshotValidator.isValid($0) ? $0 : nil
+        }
+        prefetchedOpeningSnapshot = nil
+        var requiresUnconditionalRefresh =
+            hadPrefetchedSnapshot && validPrefetchedSnapshot == nil
         if let opening = SwitcherOpeningCandidates.cached(
-            from: prefetchedOpeningSnapshot,
+            from: validPrefetchedSnapshot,
             settings: settings,
             pointerDisplayID: pointerDisplayID,
             currentWindowKey: currentWindowKey
         ) {
-            prefetchedOpeningSnapshot = nil
-            apply(
-                .prepared(
-                    snapshotGeneration: opening.snapshotGeneration,
-                    orderedItems: opening.orderedItems
+            if opening.containsAlternative(to: currentWindowKey) {
+                apply(
+                    .prepared(
+                        snapshotGeneration: opening.snapshotGeneration,
+                        orderedItems: opening.orderedItems
+                    )
                 )
-            )
-            guard state.phase == .visible else { return }
-            scheduleReconciliation(
-                generation: generation,
-                settings: settings,
-                pointerDisplayID: pointerDisplayID,
-                forceRefreshIfStale: forceRefreshIfStale
-            )
-            return
+                guard state.phase == .visible else { return }
+                scheduleReconciliation(
+                    generation: generation,
+                    settings: settings,
+                    pointerDisplayID: pointerDisplayID,
+                    forceRefreshIfStale: forceRefreshIfStale
+                )
+                return
+            }
+            // A cached snapshot with no alternative must not end the session:
+            // a just-created window may not have reached the registry yet.
+            // Remain in `preparing` until the requested forced refresh decides.
+            requiresUnconditionalRefresh = true
         }
 
         preparationTask = Task { [weak self, snapshotProvider] in
-            let snapshot = await snapshotProvider.snapshot(
-                forceRefreshIfStale: false
-            )
+            let snapshot = if requiresUnconditionalRefresh {
+                await snapshotProvider.refreshSnapshot()
+            } else {
+                await snapshotProvider.snapshot(
+                    forceRefreshIfStale: forceRefreshIfStale
+                )
+            }
+            guard WindowSnapshotValidator.isValid(snapshot) else {
+                guard let self,
+                      !Task.isCancelled,
+                      generation == self.sessionGeneration,
+                      self.state.phase == .preparing
+                else {
+                    return
+                }
+                self.apply(.preparationFailed)
+                return
+            }
             let opening = SwitcherOpeningCandidates.make(
                 from: snapshot,
                 settings: settings,
@@ -494,7 +617,15 @@ final class SwitcherSessionCoordinator {
             guard let self,
                   !Task.isCancelled,
                   generation == self.sessionGeneration,
-                  self.state.phase == .visible,
+                  self.state.phase == .visible
+            else {
+                return
+            }
+            guard WindowSnapshotValidator.isValid(fresh) else {
+                self.cancel()
+                return
+            }
+            guard
                   fresh.generation >
                     (self.state.snapshotGeneration ?? 0)
             else {
@@ -534,7 +665,8 @@ final class SwitcherSessionCoordinator {
                 presentation: settings.presentation,
                 panelSize: settings.panelSize,
                 theme: settings.theme,
-                opacity: settings.opacity
+                opacity: settings.opacity,
+                displayID: sessionPointerDisplayID
             )
             endAppearanceSignpost()
             scheduleThumbnailRefresh()
@@ -715,16 +847,26 @@ final class SwitcherSessionCoordinator {
         let windows = state.items
         let keys = windows.map(\.id)
         let priority = thumbnailPriority()
-        let targetSize = Self.thumbnailTargetSize(for: settings.panelSize)
+        let plan = ThumbnailCapturePlan(
+            allKeys: keys,
+            priorityKeys: priority.isEmpty
+                ? Array(keys.prefix(3))
+                : priority,
+            visibleKeys: panelController.visibleWindowKeys
+        )
+        let targetSize = Self.thumbnailTargetSize(
+            for: settings.panelSize,
+            backingScaleFactor: panelController.backingScaleFactor
+        )
 
         captureTask = Task { [weak self] in
             await service.cancelPending()
-            let immediate = priority.isEmpty
-                ? Array(keys.prefix(3))
-                : priority
-            await service.refresh(
-                windows.filter { immediate.contains($0.id) },
-                priority: immediate,
+            _ = await service.refresh(
+                Self.windows(
+                    matching: plan.immediate,
+                    in: windows
+                ),
+                priority: plan.immediate,
                 targetSize: targetSize
             )
             guard let self,
@@ -736,13 +878,30 @@ final class SwitcherSessionCoordinator {
             }
             self.scheduleRendering(present: false)
 
-            let immediateSet = Set(immediate)
-            let remaining = windows.filter {
-                !immediateSet.contains($0.id)
+            if !plan.visible.isEmpty {
+                _ = await service.refresh(
+                    Self.windows(
+                        matching: plan.visible,
+                        in: windows
+                    ),
+                    priority: plan.visible,
+                    targetSize: targetSize
+                )
+                guard !Task.isCancelled,
+                      generation == self.sessionGeneration,
+                      self.state.phase == .visible
+                else {
+                    return
+                }
+                self.scheduleRendering(present: false)
             }
-            guard !remaining.isEmpty else { return }
-            await service.refresh(
-                remaining,
+
+            guard !plan.remaining.isEmpty else { return }
+            _ = await service.refresh(
+                Self.windows(
+                    matching: plan.remaining,
+                    in: windows
+                ),
                 priority: [],
                 targetSize: targetSize
             )
@@ -754,6 +913,18 @@ final class SwitcherSessionCoordinator {
             }
             self.scheduleRendering(present: false)
         }
+    }
+
+    private static func windows(
+        matching keys: [WindowKey],
+        in windows: [WindowRecord]
+    ) -> [WindowRecord] {
+        let windowsByKey = windows.reduce(
+            into: [WindowKey: WindowRecord]()
+        ) { result, window in
+            result[window.id] = window
+        }
+        return keys.compactMap { windowsByKey[$0] }
     }
 
     private func startRegistryPolling() {
@@ -781,7 +952,15 @@ final class SwitcherSessionCoordinator {
                 )
                 guard !Task.isCancelled,
                       generation == self.sessionGeneration,
-                      self.state.phase == .visible,
+                      self.state.phase == .visible
+                else {
+                    return
+                }
+                guard WindowSnapshotValidator.isValid(snapshot) else {
+                    self.cancel()
+                    return
+                }
+                guard
                       snapshot.generation >
                         (self.state.snapshotGeneration ?? 0)
                 else {
@@ -790,7 +969,7 @@ final class SwitcherSessionCoordinator {
                 let candidates = WindowSelectionPipeline.candidates(
                     from: snapshot,
                     settings: self.settingsProvider(),
-                    pointerDisplayID: Self.pointerDisplayID()
+                    pointerDisplayID: self.sessionPointerDisplayID
                 )
                 self.apply(
                     .registryUpdated(
@@ -832,11 +1011,11 @@ final class SwitcherSessionCoordinator {
         }
     }
 
-    private func thumbnailProvider() -> ThumbnailService {
+    private func thumbnailProvider() -> any ThumbnailProviding {
         if let thumbnailService {
             return thumbnailService
         }
-        let service = ThumbnailService()
+        let service = thumbnailFactory()
         thumbnailService = service
         return service
     }
@@ -896,14 +1075,18 @@ final class SwitcherSessionCoordinator {
             .map { CGDirectDisplayID($0.uint32Value) }
     }
 
-    private static func thumbnailTargetSize(for size: PanelSize) -> CGSize {
+    private static func thumbnailTargetSize(
+        for size: PanelSize,
+        backingScaleFactor: CGFloat = 2
+    ) -> CGSize {
+        let scale = max(1, backingScaleFactor)
         switch size {
         case .small:
-            CGSize(width: 480, height: 320)
+            return CGSize(width: 240 * scale, height: 160 * scale)
         case .medium, .auto:
-            CGSize(width: 600, height: 400)
+            return CGSize(width: 300 * scale, height: 200 * scale)
         case .large:
-            CGSize(width: 720, height: 480)
+            return CGSize(width: 360 * scale, height: 240 * scale)
         }
     }
 }

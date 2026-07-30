@@ -1,7 +1,9 @@
-import XCTest
+import Testing
 @testable import TabListCore
 
-final class PrivacyRedactionTests: XCTestCase {
+@Suite
+struct PrivacyRedactionTests {
+    @Test
     func testWindowTitlesAreNeverReturnedInDiagnostics() {
         let sensitive = "Secret customer contract"
 
@@ -12,6 +14,7 @@ final class PrivacyRedactionTests: XCTestCase {
         XCTAssertEqual(PrivacyRedaction.windowTitle(""), "<empty>")
     }
 
+    @Test
     func testBundleIdentifierHashIsDeterministicOnlyForSameExportSalt() {
         let identifier = "com.example.SensitiveApp"
         let first = PrivacyRedaction.bundleIdentifier(
@@ -33,6 +36,7 @@ final class PrivacyRedactionTests: XCTestCase {
         XCTAssertEqual(first.count, 24)
     }
 
+    @Test
     func testMissingBundleIdentifierUsesNonSensitivePlaceholder() {
         XCTAssertEqual(
             PrivacyRedaction.bundleIdentifier(

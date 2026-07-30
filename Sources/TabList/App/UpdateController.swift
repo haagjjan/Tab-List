@@ -20,6 +20,9 @@ final class UpdateController {
         ) as? String
         guard key?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         else {
+            TabListLog.updates.notice(
+                "Sparkle updater is disabled because no public update key is configured"
+            )
             controller = nil
             return
         }

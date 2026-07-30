@@ -45,7 +45,11 @@ jobs:
       - name: Validate project metadata
         run: |
           set -euo pipefail
-          plutil -lint Config/*.plist Config/*.entitlements
+          plutil -lint \
+            Config/*.plist \
+            Config/*.entitlements \
+            Resources/TabList/en.lproj/InfoPlist.strings
+          jq empty Resources/TabList/Localizable.xcstrings
           jq empty Resources/TabList/Assets.xcassets/Contents.json
           jq empty Resources/TabList/Assets.xcassets/AppIcon.appiconset/Contents.json
           jq empty Resources/TabList/Assets.xcassets/AccentColor.colorset/Contents.json
@@ -60,6 +64,13 @@ jobs:
             Resources/TabList/Assets.xcassets/AppIcon.appiconset
           git diff --exit-code -- TabList.xcodeproj Resources/TabList/Assets.xcassets/AppIcon.appiconset
 
+      - name: Run portable core and application-logic tests
+        run: swift test
+
+      - name: Run pure-core microbenchmarks
+        if: matrix.os == 'macos-26'
+        run: Scripts/benchmark_core.sh "${{ runner.temp }}/CoreBenchmarkResults.json"
+
       - name: Build and test
         env:
           DERIVED_DATA_PATH: ${{ runner.temp }}/TabListDerivedData
@@ -72,5 +83,14 @@ jobs:
         with:
           name: TabListTests-${{ matrix.os }}
           path: ${{ runner.temp }}/TabListTests.xcresult
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload core benchmark results
+        if: always() && matrix.os == 'macos-26'
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: TabListCoreBenchmarks
+          path: ${{ runner.temp }}/CoreBenchmarkResults.json
           if-no-files-found: ignore
           retention-days: 14

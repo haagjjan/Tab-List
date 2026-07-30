@@ -11,13 +11,20 @@ struct SwitcherOpeningCandidates: Equatable, Sendable {
     let snapshotGeneration: UInt64
     let orderedItems: [WindowRecord]
 
+    func containsAlternative(to currentWindowKey: WindowKey?) -> Bool {
+        orderedItems.contains { $0.id != currentWindowKey }
+    }
+
     static func cached(
         from snapshot: WindowSnapshot?,
         settings: SettingsV1,
         pointerDisplayID: CGDirectDisplayID?,
         currentWindowKey: WindowKey? = nil
     ) -> Self? {
-        guard let snapshot else { return nil }
+        guard let snapshot,
+              WindowSnapshotValidator.isValid(snapshot) else {
+            return nil
+        }
         return make(
             from: snapshot,
             settings: settings,

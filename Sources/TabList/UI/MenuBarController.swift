@@ -8,6 +8,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     var onCheckForUpdates: (() -> Void)?
     var onOpenAbout: (() -> Void)?
     var onQuit: (() -> Void)?
+#if DEBUG
+    var onOpenDebugInspector: (() -> Void)?
+#endif
 
     private let statusItem: NSStatusItem
     private let menu = NSMenu()
@@ -97,6 +100,16 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
+#if DEBUG
+        let inspector = NSMenuItem(
+            title: "Open Window Inspector…",
+            action: #selector(openDebugInspector),
+            keyEquivalent: ""
+        )
+        inspector.target = self
+        menu.addItem(inspector)
+#endif
+
         let about = NSMenuItem(
             title: String(localized: "About Tab‑List"),
             action: #selector(openAbout),
@@ -144,6 +157,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func openAbout() {
         onOpenAbout?()
     }
+
+#if DEBUG
+    @objc private func openDebugInspector() {
+        onOpenDebugInspector?()
+    }
+#endif
 
     @objc private func quit() {
         onQuit?()

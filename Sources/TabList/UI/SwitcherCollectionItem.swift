@@ -18,6 +18,7 @@ final class SwitcherCollectionItem: NSCollectionViewItem {
 
     private let selectionView = NSView()
     private let previewImageView = NSImageView()
+    private let appIconImageView = NSImageView()
     private let appNameLabel = NSTextField(labelWithString: "")
     private let titleLabel = NSTextField(labelWithString: "")
     private let stateLabel = NSTextField(labelWithString: "")
@@ -46,6 +47,13 @@ final class SwitcherCollectionItem: NSCollectionViewItem {
         previewImageView.layer?.cornerRadius = 8
         previewImageView.layer?.masksToBounds = true
         previewImageView.translatesAutoresizingMaskIntoConstraints = false
+
+        appIconImageView.imageScaling = .scaleProportionallyDown
+        appIconImageView.wantsLayer = true
+        appIconImageView.layer?.cornerRadius = 6
+        appIconImageView.layer?.backgroundColor =
+            NSColor.windowBackgroundColor.withAlphaComponent(0.86).cgColor
+        appIconImageView.translatesAutoresizingMaskIntoConstraints = false
 
         appNameLabel.font = .systemFont(ofSize: 13, weight: .semibold)
         appNameLabel.lineBreakMode = .byTruncatingTail
@@ -82,6 +90,7 @@ final class SwitcherCollectionItem: NSCollectionViewItem {
 
         view.addSubview(selectionView)
         selectionView.addSubview(previewImageView)
+        selectionView.addSubview(appIconImageView)
         selectionView.addSubview(appNameLabel)
         selectionView.addSubview(titleLabel)
         selectionView.addSubview(stateLabel)
@@ -151,6 +160,12 @@ final class SwitcherCollectionItem: NSCollectionViewItem {
 
         switch presentation {
         case .thumbnails:
+            appIconImageView.image = item.icon
+            appIconImageView.layer?.backgroundColor =
+                NSColor.windowBackgroundColor
+                    .withAlphaComponent(0.86)
+                    .cgColor
+            appIconImageView.isHidden = false
             if let thumbnail = item.thumbnail {
                 previewImageView.image = NSImage(
                     cgImage: thumbnail,
@@ -161,9 +176,11 @@ final class SwitcherCollectionItem: NSCollectionViewItem {
             }
             previewImageView.imageScaling = item.thumbnail == nil ? .scaleProportionallyDown : .scaleProportionallyUpOrDown
         case .appIcons:
+            appIconImageView.isHidden = true
             previewImageView.image = item.icon
             previewImageView.imageScaling = .scaleProportionallyDown
         case .titles:
+            appIconImageView.isHidden = true
             previewImageView.image = item.icon
             previewImageView.imageScaling = .scaleProportionallyDown
         }
@@ -187,7 +204,13 @@ final class SwitcherCollectionItem: NSCollectionViewItem {
 
     private func rebuildConstraints() {
         NSLayoutConstraint.deactivate(selectionView.constraints.filter { constraint in
-            [previewImageView, appNameLabel, titleLabel, stateLabel].contains { view in
+            [
+                previewImageView,
+                appIconImageView,
+                appNameLabel,
+                titleLabel,
+                stateLabel,
+            ].contains { view in
                 constraint.firstItem as AnyObject? === view || constraint.secondItem as AnyObject? === view
             }
         })
@@ -199,6 +222,17 @@ final class SwitcherCollectionItem: NSCollectionViewItem {
                 previewImageView.trailingAnchor.constraint(equalTo: selectionView.trailingAnchor, constant: -8),
                 previewImageView.topAnchor.constraint(equalTo: selectionView.topAnchor, constant: 8),
                 previewImageView.bottomAnchor.constraint(equalTo: appNameLabel.topAnchor, constant: -7),
+
+                appIconImageView.leadingAnchor.constraint(
+                    equalTo: previewImageView.leadingAnchor,
+                    constant: 7
+                ),
+                appIconImageView.bottomAnchor.constraint(
+                    equalTo: previewImageView.bottomAnchor,
+                    constant: -7
+                ),
+                appIconImageView.widthAnchor.constraint(equalToConstant: 30),
+                appIconImageView.heightAnchor.constraint(equalToConstant: 30),
 
                 appNameLabel.leadingAnchor.constraint(equalTo: selectionView.leadingAnchor, constant: 10),
                 appNameLabel.trailingAnchor.constraint(lessThanOrEqualTo: closeButton.leadingAnchor, constant: -4),

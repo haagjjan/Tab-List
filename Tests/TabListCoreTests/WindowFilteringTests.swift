@@ -1,7 +1,9 @@
-import XCTest
+import Testing
 @testable import TabListCore
 
-final class WindowFilteringTests: XCTestCase {
+@Suite
+struct WindowFilteringTests {
+    @Test
     func testDefaultSettingsIncludeSupportedWindowStates() {
         let windows = [
             TestFixtures.window(1, isMinimized: true),
@@ -23,6 +25,7 @@ final class WindowFilteringTests: XCTestCase {
         )
     }
 
+    @Test
     func testStateFiltersExcludeOnlyRequestedStates() {
         var settings = SettingsV1.default
         settings.includeMinimized = false
@@ -50,6 +53,7 @@ final class WindowFilteringTests: XCTestCase {
         )
     }
 
+    @Test
     func testNonstandardAndExcludedApplicationsAreRejected() {
         var settings = SettingsV1.default
         settings.excludedBundleIdentifiers = ["COM.EXAMPLE.APP"]
@@ -80,6 +84,7 @@ final class WindowFilteringTests: XCTestCase {
         )
     }
 
+    @Test
     func testVisibleSpaceScopeRequiresAnIntersectingKnownSpace() {
         var settings = SettingsV1.default
         settings.spaceScope = .visibleSpaces
@@ -101,6 +106,7 @@ final class WindowFilteringTests: XCTestCase {
         )
     }
 
+    @Test
     func testPointerScreenScopeUsesPointerDisplayWhenKnown() {
         var settings = SettingsV1.default
         settings.screenScope = .pointerScreen
@@ -121,6 +127,7 @@ final class WindowFilteringTests: XCTestCase {
         )
     }
 
+    @Test
     func testUnknownPointerDisplayFailsOpenInsteadOfEmptyingSwitcher() {
         var settings = SettingsV1.default
         settings.screenScope = .pointerScreen
@@ -142,6 +149,7 @@ final class WindowFilteringTests: XCTestCase {
         )
     }
 
+    @Test
     func testSelectionPipelineFiltersThenSortsByWindowMRU() {
         let older = TestFixtures.window(1, focusSequence: 10)
         let newest = TestFixtures.window(2, focusSequence: 30)
@@ -166,6 +174,7 @@ final class WindowFilteringTests: XCTestCase {
         )
     }
 
+    @Test
     func testSelectionPipelineKeepsEachSameApplicationWindowAndItsTitle() {
         let browserWindows = [
             TestFixtures.window(
@@ -209,6 +218,7 @@ final class WindowFilteringTests: XCTestCase {
         )
     }
 
+    @Test
     func testCombinedVisibleSpaceAndPointerScreenScopesRequireBoth() {
         var settings = SettingsV1.default
         settings.spaceScope = .visibleSpaces

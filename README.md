@@ -43,18 +43,26 @@ Scripts/bootstrap.sh
 open TabList.xcodeproj
 ```
 
-From Xcode, select the `TabList` scheme and run. The command-line build and test entry point is:
+From Xcode, select the `TabList` scheme and run. The full-Xcode build and test
+entry point is:
 
 ```sh
 Scripts/ci.sh
 ```
 
-With full Xcode selected, the framework-neutral core can also be tested through
-Swift Package Manager:
+Command Line Tools 26.2 are sufficient for the portable validation path. It
+compiles the complete application source (without bundling Sparkle or app
+resources), runs the core and app-logic suites, and exercises deterministic
+microbenchmarks:
 
 ```sh
 swift test
+Scripts/validate_clt.sh
+Scripts/benchmark_core.sh
 ```
+
+Full Xcode remains mandatory for XCTest UI execution, a runnable application
+bundle, archiving, signing, and notarization.
 
 `project.yml` is the source of truth for targets and build settings. Regenerate `TabList.xcodeproj` after changing it. Do not put signing identities or update keys in the repository; local overrides belong in ignored files or the Xcode command line.
 
@@ -70,6 +78,8 @@ CI verifies that the installed XcodeGen is exactly 2.46.0 before comparing the g
 | `Tests` | Unit and UI tests |
 | `Config` | Info plists and entitlements |
 | `Scripts` | Bootstrap, CI, archive, notarization, packaging, and appcast tooling |
+| `docs/release` | Candidate verification, promotion, and acceptance records |
+| `docs/human-actions` | Account, legal, credential, hardware, and publication runbooks |
 | `IMPLEMENTATION_PLAN.md` | Product, architecture, rollout, and acceptance specification |
 
 ## Privacy and clean-room policy
@@ -80,11 +90,26 @@ AltTab inspired the user interaction, but Tab-List is an independent clean-room 
 
 ## Release
 
-Tagged and manually dispatched releases run the signing workflow in `.github/workflows/release.yml`. Maintainers must configure Developer ID, App Store Connect notarization, and Sparkle EdDSA secrets before publishing. The workflow tests, archives, signs, notarizes, staples, packages, generates the appcast, and creates the GitHub Release.
+Releases use two separate protected workflows. `.github/workflows/release.yml`
+tests, archives, signs, notarizes, staples, packages, verifies, and creates a
+six-asset **draft candidate**. It never publishes. After manual compatibility,
+performance, clean-install, and update acceptance, a maintainer runs
+`.github/workflows/promote-release.yml`; that workflow revalidates the
+immutable candidate and publishes the existing draft without rebuilding it.
 
-The workflow gates publication on macOS 15 and macOS 26 test jobs. Manual releases are accepted only from the repository’s default branch; release tags must point to a commit reachable from that branch. Versions with a pre-release suffix, such as `1.0.0-beta.1`, are always published as GitHub pre-releases. Build numbers must be greater than the newest published Sparkle build.
+Candidate creation is gated on macOS 15 and macOS 26 test jobs. Manual
+candidates are accepted only from the repository’s default branch; release
+tags must point to a commit reachable from that branch. Versions with a
+pre-release suffix, such as `1.0.0-beta.1`, are always promoted as GitHub
+pre-releases. Build numbers must be greater than the newest published Sparkle
+build.
 
-Create a protected GitHub Environment named `release`, require maintainer approval, and store the release secrets there. Before upload, CI verifies the archived version/build/public key, legal resources, appcast URL and length, and the ZIP’s EdDSA signature.
+Create protected GitHub Environments named `release` and
+`release-promotion`, each with deliberate maintainer approval. Store signing
+secrets only in `release`; the promotion environment needs none. Before
+creating the draft, CI verifies identities, architecture, hardened runtime,
+stapling, Gatekeeper, bundled legal resources, the tag-bound appcast, package
+identity, and the ZIP’s EdDSA signature.
 
 Required repository or protected-environment secrets are:
 
@@ -102,7 +127,10 @@ The two base64 private-key secrets contain the encoded file bytes, not a path. E
 
 Every `.app` and DMG includes Tab-List’s license, privacy notice, third-party notices, and Sparkle’s complete upstream license. The DMG places readable copies under `Documentation`.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) before contributing or releasing.
+See the [release candidate and promotion runbook](docs/release/RELEASE_CANDIDATE_AND_PROMOTION.md)
+and [human-action index](docs/human-actions/README.md) before releasing. Also
+review [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 The original blue/teal layered-window icon is stored as a complete macOS asset set. Rebuild its renditions from the reviewed source with:
 

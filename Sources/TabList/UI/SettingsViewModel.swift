@@ -126,7 +126,12 @@ final class SettingsViewModel: ObservableObject {
             }
     }
 
-    func resetToDefaults() {
+    /// Resets only the preferences represented by `SettingsV1`.
+    ///
+    /// Launch-at-login remains owned by `SMAppService`, while Accessibility and
+    /// Screen Recording remain owned by macOS. Resetting preferences must not
+    /// mutate either external state.
+    func resetPreferences() {
         apply(.default)
         refreshExcludedApplications()
     }

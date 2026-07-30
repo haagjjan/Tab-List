@@ -1,8 +1,10 @@
 import Foundation
-import XCTest
+import Testing
 @testable import TabListCore
 
-final class WindowModelsTests: XCTestCase {
+@Suite
+struct WindowModelsTests {
+    @Test
     func testWindowKeyRoundTripsThroughCodable() throws {
         let key = TestFixtures.key(42, pid: 7)
 
@@ -12,6 +14,7 @@ final class WindowModelsTests: XCTestCase {
         XCTAssertEqual(decoded, key)
     }
 
+    @Test
     func testSnapshotFindsWindowByProcessScopedKey() {
         let first = TestFixtures.window(1, pid: 10)
         let second = TestFixtures.window(1, pid: 20)
@@ -25,6 +28,7 @@ final class WindowModelsTests: XCTestCase {
         XCTAssertNil(snapshot.window(for: TestFixtures.key(999)))
     }
 
+    @Test
     func testIdenticalWindowIDsFromDifferentProcessesRemainDistinct() {
         let first = TestFixtures.key(1, pid: 10)
         let second = TestFixtures.key(1, pid: 11)
@@ -33,6 +37,7 @@ final class WindowModelsTests: XCTestCase {
         XCTAssertEqual(Set([first, second]).count, 2)
     }
 
+    @Test
     func testWindowIncarnationDistinguishesRecycledPreviewIdentity() {
         var original = TestFixtures.window(1, pid: 10)
         var recycled = original

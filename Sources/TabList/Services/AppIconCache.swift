@@ -1,6 +1,6 @@
 @preconcurrency import AppKit
-import CryptoKit
 import Foundation
+import TabListCore
 import UniformTypeIdentifiers
 
 @MainActor
@@ -10,6 +10,13 @@ public protocol AppIconProviding: AnyObject {
         bundleURL: URL?,
         targetSize: CGFloat
     ) async -> NSImage
+    func cachedIcon(
+        for bundleIdentifier: String?,
+        bundleURL: URL?,
+        targetSize: CGFloat
+    ) -> NSImage?
+    func placeholderIcon(targetSize: CGFloat) -> NSImage
+    func purgeMemory()
 }
 
 /// A small memory cache backed by normalized PNG files. The cache key includes
@@ -142,17 +149,15 @@ public final class AppIconCache: AppIconProviding {
             .resourceValues(forKeys: [.contentModificationDateKey])
             .contentModificationDate?
             .timeIntervalSince1970
-        let fingerprintParts: [String] = [
-            bundleIdentifier ?? "",
-            bundleURL?.standardizedFileURL.path ?? "",
-            version,
-            modificationDate.map { String($0) } ?? "",
-            String(format: "%.0f", targetSize),
-        ]
-        let components = fingerprintParts.joined(separator: "\u{1F}")
-        return SHA256.hash(data: Data(components.utf8))
-            .map { String(format: "%02x", $0) }
-            .joined()
+        return AppIconFingerprint.make(
+            bundleIdentifier: bundleIdentifier,
+            canonicalBundlePath: bundleURL?
+                .resolvingSymlinksInPath()
+                .standardizedFileURL.path,
+            bundleVersion: version,
+            modificationTime: modificationDate,
+            targetSize: Double(targetSize)
+        )
     }
 
     private func normalizedImage(_ image: NSImage, size: CGFloat) -> NSImage {

@@ -81,6 +81,10 @@ public actor WindowRegistry:
         return makeSnapshot()
     }
 
+    public func refreshSnapshot() async -> WindowSnapshot {
+        await refresh()
+    }
+
     @discardableResult
     public func refresh() async -> WindowSnapshot {
         let flight: (
@@ -157,7 +161,11 @@ public actor WindowRegistry:
         mru.retainOnly(newKeys)
 
         let sequenced = mru.applyingSequences(to: incarnatedWindows)
-        records = Dictionary(uniqueKeysWithValues: sequenced.map { ($0.id, $0) })
+        records = sequenced.reduce(
+            into: [WindowKey: WindowRecord]()
+        ) { result, window in
+            result[window.id] = window
+        }
         sourceOrder = sequenced.map(\.id)
         if let focusedKey,
            focusedKey != lastConfirmedFocusedKey,

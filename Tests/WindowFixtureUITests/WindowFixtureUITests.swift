@@ -45,4 +45,39 @@ final class WindowFixtureUITests: XCTestCase {
         XCTAssertTrue(application.windows["Unsaved Document 6"].exists)
         XCTAssertTrue(application.windows["Native Tab A"].exists)
     }
+
+    func testFixtureExposesMutationAndHighWindowCountControls() {
+        let application = XCUIApplication()
+        application.launch()
+
+        for identifier in [
+            "fixture.new-identical-title-pair",
+            "fixture.new-very-long-title-window",
+            "fixture.retitle-a-standard-window",
+            "fixture.move-and-resize-a-standard-window",
+            "fixture.create-10-standard-windows",
+            "fixture.create-50-standard-windows",
+            "fixture.create-100-standard-windows",
+            "fixture.hide-fixture-application",
+            "fixture.block-fixture-main-thread-for-8-seconds",
+        ] {
+            XCTAssertTrue(
+                application.buttons[identifier].waitForExistence(timeout: 3),
+                "Missing fixture control \(identifier)"
+            )
+        }
+    }
+
+    func testFixtureLaunchArgumentCreatesTenTotalWindows() {
+        let application = XCUIApplication()
+        application.launchArguments = ["--fixture-window-count=10"]
+        application.launch()
+
+        XCTAssertTrue(
+            application.windows[
+                "Tab-List Window Fixture Controls"
+            ].waitForExistence(timeout: 5)
+        )
+        XCTAssertGreaterThanOrEqual(application.windows.count, 10)
+    }
 }

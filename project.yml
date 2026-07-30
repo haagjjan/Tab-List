@@ -48,6 +48,7 @@ fileGroups:
   - THIRD_PARTY_NOTICES.md
   - LICENSE
   - Scripts
+  - docs
   - Resources/Artwork
   - reference
 
@@ -74,6 +75,10 @@ targets:
       - path: Sources/TabList
       - path: Resources/TabList/Assets.xcassets
         buildPhase: resources
+      - path: Resources/TabList/Localizable.xcstrings
+        buildPhase: resources
+      - path: Resources/TabList/en.lproj/InfoPlist.strings
+        buildPhase: resources
       - path: LICENSE
         buildPhase: resources
       - path: PRIVACY.md
@@ -86,7 +91,7 @@ targets:
       path: Config/TabList-Info.plist
       properties:
         CFBundleDevelopmentRegion: "$(DEVELOPMENT_LANGUAGE)"
-        CFBundleDisplayName: "Tab-List"
+        CFBundleDisplayName: "Tab‑List"
         CFBundleExecutable: "$(EXECUTABLE_NAME)"
         CFBundleIdentifier: "$(PRODUCT_BUNDLE_IDENTIFIER)"
         CFBundleInfoDictionaryVersion: "6.0"
@@ -97,7 +102,7 @@ targets:
         LSMinimumSystemVersion: "$(MACOSX_DEPLOYMENT_TARGET)"
         LSUIElement: true
         NSHumanReadableCopyright: "Copyright © 2026 Jan Haag. Released under the MIT License."
-        NSScreenCaptureUsageDescription: "Tab-List captures scaled previews of open windows when Thumbnail mode is enabled."
+        NSScreenCaptureUsageDescription: "Tab‑List captures scaled previews of open windows when Thumbnail mode is enabled."
         SUEnableAutomaticChecks: true
         SUEnableSystemProfiling: false
         SUFeedURL: "https://github.com/haagjjan/Tab-List/releases/latest/download/appcast.xml"
@@ -113,12 +118,13 @@ targets:
         CURRENT_PROJECT_VERSION: 1
         DEVELOPMENT_TEAM: ""
         ENABLE_APP_SANDBOX: NO
-        INFOPLIST_KEY_CFBundleDisplayName: "Tab-List"
+        INFOPLIST_KEY_CFBundleDisplayName: "Tab‑List"
         MARKETING_VERSION: 1.0.0
         PRODUCT_BUNDLE_IDENTIFIER: com.haagjjan.TabList
         PRODUCT_MODULE_NAME: TabList
         PRODUCT_NAME: TabList
         SPARKLE_PUBLIC_ED_KEY: ""
+        SWIFT_EMIT_LOC_STRINGS: YES
       configs:
         Debug:
           CODE_SIGN_IDENTITY: "-"

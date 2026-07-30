@@ -1,7 +1,9 @@
-import XCTest
+import Testing
 @testable import TabListCore
 
-final class MRUOrderingTests: XCTestCase {
+@Suite
+struct MRUOrderingTests {
+    @Test
     func testOrderingUsesDescendingFocusSequenceAndStableTies() {
         let firstTie = TestFixtures.window(1, focusSequence: 5)
         let newest = TestFixtures.window(2, focusSequence: 9)
@@ -13,6 +15,7 @@ final class MRUOrderingTests: XCTestCase {
         )
     }
 
+    @Test
     func testStartupSeedPreservesFrontToBackOrder() {
         let front = TestFixtures.key(1)
         let middle = TestFixtures.key(2)
@@ -31,6 +34,7 @@ final class MRUOrderingTests: XCTestCase {
         )
     }
 
+    @Test
     func testStartupSeedPlacesKnownVisibleWindowsBeforeOffSpaceWindows() {
         let visibleFront = TestFixtures.key(1)
         let offSpace = TestFixtures.key(2)
@@ -52,6 +56,7 @@ final class MRUOrderingTests: XCTestCase {
         )
     }
 
+    @Test
     func testOnlyConfirmedFocusedWindowAdvances() {
         let first = TestFixtures.key(1, pid: 100)
         let sibling = TestFixtures.key(2, pid: 100)
@@ -69,6 +74,7 @@ final class MRUOrderingTests: XCTestCase {
         )
     }
 
+    @Test
     func testReconciliationDoesNotReverseExistingSiblingOrder() {
         let first = TestFixtures.key(1)
         let second = TestFixtures.key(2)
@@ -85,6 +91,7 @@ final class MRUOrderingTests: XCTestCase {
         XCTAssertEqual(tracker.sequence(for: newlyDiscovered), 0)
     }
 
+    @Test
     func testApplyingSequencesAndRetention() {
         let first = TestFixtures.window(1)
         let second = TestFixtures.window(2)
@@ -99,6 +106,7 @@ final class MRUOrderingTests: XCTestCase {
         XCTAssertEqual(tracker.sequence(for: second.id), 0)
     }
 
+    @Test
     func testSequenceOverflowRebasesWithoutLosingOrder() {
         let older = TestFixtures.key(1)
         let newer = TestFixtures.key(2)

@@ -1,6 +1,5 @@
 @preconcurrency import AppKit
 import Foundation
-import OSLog
 import TabListCore
 
 @main
@@ -8,17 +7,15 @@ import TabListCore
 final class TabListApplication: NSObject, NSApplicationDelegate {
     private static let resumeThumbnailOnboardingArgument =
         "--resume-thumbnail-onboarding"
-    private static let logger = Logger(
-        subsystem: "com.haagjjan.TabList",
-        category: "application"
-    )
-
     private var settingsStore: SettingsStore!
     private var settingsModel: SettingsViewModel!
     private var onboardingModel: OnboardingViewModel!
     private var settingsWindow: SettingsWindowController!
     private var onboardingWindow: OnboardingWindowController!
     private var menuBar: MenuBarController!
+#if DEBUG
+    private var debugInspector: DebugInspectorWindowController!
+#endif
 
     private var permissionService: PermissionService!
     private var windowServer: WindowServerBridge!
@@ -152,7 +149,12 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
                 }
                 Task { [weak self, weak registry] in
                     guard let key = await self?.accessibility
-                        .focusedWindowKey(for: pid)
+                        .focusedWindowKey(for: pid),
+                          GlobalFocusObservationGate.accepts(
+                              observedPID: pid,
+                              frontmostPID: NSWorkspace.shared
+                                  .frontmostApplication?.processIdentifier
+                          )
                     else {
                         return
                     }
@@ -180,6 +182,9 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
         settingsWindow = SettingsWindowController(model: settingsModel)
         onboardingWindow = OnboardingWindowController(model: onboardingModel)
         menuBar = MenuBarController()
+#if DEBUG
+        debugInspector = DebugInspectorWindowController()
+#endif
         menuBar.setVisible(settingsStore.settings.showMenuBarIcon)
 
         let actions = WindowActionService(
@@ -222,6 +227,15 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
         menuBar.onQuit = {
             NSApp.terminate(nil)
         }
+#if DEBUG
+        menuBar.onOpenDebugInspector = { [weak self] in
+            guard let self else { return }
+            self.debugInspector.show(
+                registry: self.registry,
+                windowServer: self.windowServer
+            )
+        }
+#endif
 
         settingsWindow.onWillClose = { [weak self] in
             self?.session.cancel()
@@ -396,6 +410,11 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
     private func applyPermissionStatus(_ status: SystemPermissionSnapshot) {
         let previous = permissions
         permissions = status
+        if status != previous {
+            TabListLog.permissions.notice(
+                "Permission state changed: Accessibility \(status.accessibility.rawValue, privacy: .public), Screen Recording \(status.screenRecording.rawValue, privacy: .public)"
+            )
+        }
 
         let accessibilityGranted = status.accessibility == .authorized
         let screenRecordingGranted = status.screenRecording == .authorized
@@ -425,7 +444,8 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
         }
 
         if status.screenRecording == .authorized,
-           onboardingModel.screenRecordingRestartRequired {
+           onboardingModel.screenRecordingRestartRequired
+            || onboardingModel.step == .thumbnails {
             onboardingModel.showReady()
         }
         synchronizeBackgroundRefresh()
@@ -498,7 +518,7 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
             settingsModel.shortcutValidationMessage = String(
                 localized: "The shortcut could not be registered. The previous shortcut remains active."
             )
-            Self.logger.error(
+            TabListLog.input.error(
                 "Global shortcut registration failed: \(String(describing: error), privacy: .public)"
             )
             return false

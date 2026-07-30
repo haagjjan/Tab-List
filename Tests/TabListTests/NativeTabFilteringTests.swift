@@ -1,9 +1,11 @@
 import CoreGraphics
 import TabListCore
-import XCTest
+import Testing
 @testable import TabList
 
-final class NativeTabFilteringTests: XCTestCase {
+@Suite
+struct NativeTabFilteringTests {
+    @Test
     func testRemovesOnlyInactiveNativeTabMemberFromMatchingContainer() {
         let visible = AppTestFixtures.window(
             1,
@@ -32,6 +34,7 @@ final class NativeTabFilteringTests: XCTestCase {
         XCTAssertEqual(filtered, [visible])
     }
 
+    @Test
     func testRetainsMinimizedMemberOfMatchingContainer() {
         let visible = AppTestFixtures.window(
             1,
@@ -49,6 +52,7 @@ final class NativeTabFilteringTests: XCTestCase {
         )
     }
 
+    @Test
     func testDoesNotCollapseSeparateWindowsWithSameAppAndGeometry() {
         let first = AppTestFixtures.window(
             1,
@@ -65,6 +69,7 @@ final class NativeTabFilteringTests: XCTestCase {
         )
     }
 
+    @Test
     func testDoesNotGroupAcrossProcessesSpacesOrGeometry() {
         let visible = AppTestFixtures.window(
             1,
@@ -100,6 +105,7 @@ final class NativeTabFilteringTests: XCTestCase {
         )
     }
 
+    @Test
     func testAmbiguousGroupWithoutExactlyOneVisibleMemberFailsOpen() {
         let first = AppTestFixtures.window(1, bounds: sharedBounds)
         let second = AppTestFixtures.window(2, bounds: sharedBounds)
@@ -114,6 +120,7 @@ final class NativeTabFilteringTests: XCTestCase {
         )
     }
 
+    @Test
     func testMissingCandidateMetadataFailsOpenAndPreservesOrdering() {
         let visible = AppTestFixtures.window(1, bounds: sharedBounds)
         let unknown = AppTestFixtures.window(2, bounds: sharedBounds)
@@ -133,6 +140,7 @@ final class NativeTabFilteringTests: XCTestCase {
         )
     }
 
+    @Test
     func testUnknownSpaceMembershipNeverCollapsesSameGeometryWindows() {
         let visible = AppTestFixtures.window(
             1,

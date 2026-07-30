@@ -1,8 +1,10 @@
 import Foundation
-import XCTest
+import Testing
 @testable import TabListCore
 
-final class SettingsTests: XCTestCase {
+@Suite
+struct SettingsTests {
+    @Test
     func testDefaultsMatchProductDecisions() {
         let settings = SettingsV1.default
 
@@ -22,6 +24,7 @@ final class SettingsTests: XCTestCase {
         XCTAssertTrue(settings.automaticallyChecksForUpdates)
     }
 
+    @Test
     func testNormalizationClampsOpacityAndCleansExclusions() {
         var settings = SettingsV1.default
         settings.opacity = 2
@@ -33,6 +36,7 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(normalized.excludedBundleIdentifiers, ["com.example.App"])
     }
 
+    @Test
     func testNormalizationUsesDefaultsForNonFiniteOpacityAndInvalidShortcut() {
         var settings = SettingsV1.default
         settings.opacity = .nan
@@ -44,6 +48,7 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(normalized.shortcut, .commandTab)
     }
 
+    @Test
     func testNormalizationReservesShiftForReverseCycling() {
         var settings = SettingsV1.default
         settings.shortcut = ShortcutDefinition(
@@ -57,6 +62,7 @@ final class SettingsTests: XCTestCase {
         )
     }
 
+    @Test
     func testVersionedPersistenceRoundTrip() throws {
         var settings = SettingsV1.default
         settings.presentation = .titles
@@ -70,6 +76,7 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(decoded.source, .versioned(schemaVersion: 1))
     }
 
+    @Test
     func testLegacyUnversionedSettingsAreMigrated() throws {
         var settings = SettingsV1.default
         settings.presentation = .appIcons
@@ -81,6 +88,7 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(decoded.source, .legacyUnversioned)
     }
 
+    @Test
     func testUnsupportedSchemaVersionIsRejected() throws {
         let envelope = PersistedSettingsEnvelope(
             schemaVersion: 99,
@@ -96,6 +104,7 @@ final class SettingsTests: XCTestCase {
         }
     }
 
+    @Test
     func testMalformedSettingsAreRejected() {
         let data = Data("not json".utf8)
 

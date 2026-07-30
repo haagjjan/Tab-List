@@ -1,5 +1,9 @@
 import AppKit
 
+private final class FlippedFixtureDocumentView: NSView {
+    override var isFlipped: Bool { true }
+}
+
 @MainActor
 final class FixtureController: NSObject, NSWindowDelegate {
     private var controlWindowController: NSWindowController?
@@ -11,14 +15,35 @@ final class FixtureController: NSObject, NSWindowDelegate {
         controlWindowController = NSWindowController(window: control)
         controlWindowController?.showWindow(nil)
 
+        if let requestedCount = Self.requestedWindowCount {
+            createBulkStandardWindows(count: max(0, requestedCount - 1))
+            return
+        }
         createStandardWindow()
         createStandardWindow()
         createUntitledWindow()
     }
 
+    private static var requestedWindowCount: Int? {
+        let environmentValue = ProcessInfo.processInfo.environment[
+            "TABLIST_FIXTURE_WINDOW_COUNT"
+        ]
+        let argumentValue = ProcessInfo.processInfo.arguments
+            .first { $0.hasPrefix("--fixture-window-count=") }?
+            .split(separator: "=", maxSplits: 1)
+            .last
+            .map(String.init)
+        guard let raw = environmentValue ?? argumentValue,
+              let count = Int(raw),
+              (2...100).contains(count) else {
+            return nil
+        }
+        return count
+    }
+
     private func makeControlWindow() -> NSWindow {
         let window = NSWindow(
-            contentRect: NSRect(x: 120, y: 120, width: 460, height: 580),
+            contentRect: NSRect(x: 120, y: 80, width: 500, height: 780),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
@@ -46,9 +71,18 @@ final class FixtureController: NSObject, NSWindowDelegate {
             ("New unclosable window", #selector(addUnclosableWindow)),
             ("New unsaved document", #selector(addUnsavedDocument)),
             ("New native tab group", #selector(addNativeTabGroup)),
+            ("New identical-title pair", #selector(addIdenticalTitlePair)),
+            ("New very-long-title window", #selector(addVeryLongTitleWindow)),
             ("Show modal sheet", #selector(showModalSheet)),
             ("Minimize a standard window", #selector(minimizeStandardWindow)),
-            ("Toggle fullscreen on a standard window", #selector(toggleFullscreen))
+            ("Toggle fullscreen on a standard window", #selector(toggleFullscreen)),
+            ("Retitle a standard window", #selector(retitleStandardWindow)),
+            ("Move and resize a standard window", #selector(moveAndResizeStandardWindow)),
+            ("Create 10 standard windows", #selector(addTenStandardWindows)),
+            ("Create 50 standard windows", #selector(addFiftyStandardWindows)),
+            ("Create 100 standard windows", #selector(addOneHundredStandardWindows)),
+            ("Hide fixture application", #selector(hideFixtureApplication)),
+            ("Block fixture main thread for 8 seconds", #selector(blockMainThread))
         ]
 
         let buttonViews = buttons.map { title, selector in
@@ -64,15 +98,31 @@ final class FixtureController: NSObject, NSWindowDelegate {
         stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        let container = NSView()
-        container.addSubview(stack)
+        let document = FlippedFixtureDocumentView(
+            frame: NSRect(x: 0, y: 0, width: 480, height: 980)
+        )
+        document.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 24),
-            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -24),
-            stack.topAnchor.constraint(equalTo: container.topAnchor, constant: 24),
-            stack.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor, constant: -24)
+            stack.leadingAnchor.constraint(
+                equalTo: document.leadingAnchor,
+                constant: 24
+            ),
+            stack.trailingAnchor.constraint(
+                equalTo: document.trailingAnchor,
+                constant: -24
+            ),
+            stack.topAnchor.constraint(
+                equalTo: document.topAnchor,
+                constant: 24
+            ),
         ])
-        return container
+
+        let scrollView = NSScrollView()
+        scrollView.documentView = document
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = false
+        return scrollView
     }
 
     @objc private func addStandardWindow() {
@@ -135,6 +185,22 @@ final class FixtureController: NSObject, NSWindowDelegate {
         retainAndShow(first)
         retainAndShow(second)
         first.makeKeyAndOrderFront(nil)
+    }
+
+    @objc private func addIdenticalTitlePair() {
+        serial += 2
+        retainAndShow(makeStandardWindow(title: "Identical Fixture Title"))
+        retainAndShow(makeStandardWindow(title: "Identical Fixture Title"))
+    }
+
+    @objc private func addVeryLongTitleWindow() {
+        serial += 1
+        retainAndShow(
+            makeStandardWindow(
+                title: "Very Long Fixture Window Title — "
+                    + String(repeating: "0123456789 ", count: 24)
+            )
+        )
     }
 
     @objc private func showModalSheet() {
@@ -212,9 +278,57 @@ final class FixtureController: NSObject, NSWindowDelegate {
             .toggleFullScreen(nil)
     }
 
+    @objc private func retitleStandardWindow() {
+        serial += 1
+        fixtureWindows
+            .compactMap(\.window)
+            .first(where: { !($0 is NSPanel) })?
+            .title = "Retitled Fixture Window \(serial)"
+    }
+
+    @objc private func moveAndResizeStandardWindow() {
+        guard let window = fixtureWindows
+            .compactMap(\.window)
+            .first(where: { !($0 is NSPanel) }) else {
+            return
+        }
+        var frame = window.frame
+        frame.origin.x += 37
+        frame.origin.y += 29
+        frame.size.width = max(360, frame.size.width - 43)
+        frame.size.height = max(220, frame.size.height - 31)
+        window.setFrame(frame, display: true, animate: false)
+    }
+
+    @objc private func addTenStandardWindows() {
+        createBulkStandardWindows(count: 10)
+    }
+
+    @objc private func addFiftyStandardWindows() {
+        createBulkStandardWindows(count: 50)
+    }
+
+    @objc private func addOneHundredStandardWindows() {
+        createBulkStandardWindows(count: 100)
+    }
+
+    @objc private func hideFixtureApplication() {
+        NSApp.hide(nil)
+    }
+
+    @objc private func blockMainThread() {
+        Thread.sleep(forTimeInterval: 8)
+    }
+
     private func createStandardWindow() {
         serial += 1
         retainAndShow(makeStandardWindow(title: "Standard Window \(serial)"))
+    }
+
+    private func createBulkStandardWindows(count: Int) {
+        for _ in 0..<min(max(count, 0), 100) {
+            createStandardWindow()
+        }
     }
 
     private func createUntitledWindow() {

@@ -1,8 +1,10 @@
 import CoreGraphics
-import XCTest
+import Testing
 @testable import TabList
 
-final class AccessibilityGeometryMatcherTests: XCTestCase {
+@Suite
+struct AccessibilityGeometryMatcherTests {
+    @Test
     func testIdenticalTitleAndGeometryFailsClosedAsAmbiguous() {
         let descriptor = AccessibilityWindowMatchDescriptor(
             title: "Document",
@@ -17,6 +19,7 @@ final class AccessibilityGeometryMatcherTests: XCTestCase {
         )
     }
 
+    @Test
     func testTitleDisambiguatesWindowsWithTheSameGeometry() {
         let bounds = CGRect(x: 20, y: 40, width: 800, height: 600)
         let target = AccessibilityWindowMatchDescriptor(
@@ -36,6 +39,7 @@ final class AccessibilityGeometryMatcherTests: XCTestCase {
         )
     }
 
+    @Test
     func testMissingGeometryCannotProduceAnActionableMatch() {
         XCTAssertNil(
             AccessibilityGeometryMatcher.uniqueMatchIndex(

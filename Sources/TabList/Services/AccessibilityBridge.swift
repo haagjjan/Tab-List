@@ -326,6 +326,12 @@ public final class AccessibilityBridge: @unchecked Sendable {
             ) else {
                 return .unsupported
             }
+            guard copyBool(
+                closeButton,
+                attribute: kAXEnabledAttribute as CFString
+            ) != false else {
+                return .unsupported
+            }
 
             let result = AXUIElementPerformAction(
                 closeButton,
@@ -464,6 +470,9 @@ public final class AccessibilityBridge: @unchecked Sendable {
             element,
             attribute: kAXCloseButtonAttribute as CFString
         )
+        let closeButtonIsEnabled = closeButton.flatMap {
+            copyBool($0, attribute: kAXEnabledAttribute as CFString)
+        }
 
         let isStandard = role == (kAXWindowRole as String)
             && (
@@ -480,7 +489,7 @@ public final class AccessibilityBridge: @unchecked Sendable {
             isMinimized: isMinimized,
             isFullscreen: isFullscreen,
             isStandardWindow: isStandard,
-            isClosable: closeButton != nil
+            isClosable: closeButton != nil && closeButtonIsEnabled != false
         )
     }
 

@@ -10,7 +10,7 @@ public protocol ThumbnailProviding: Sendable {
         _ windows: [WindowRecord],
         priority: [WindowKey],
         targetSize: CGSize
-    ) async
+    ) async -> Set<WindowKey>
     func cancelPending() async
     func purge() async
 }
@@ -21,12 +21,6 @@ private final class ThumbnailImageBox: @unchecked Sendable {
     init(_ image: CGImage) {
         self.image = image
     }
-}
-
-private struct ThumbnailCacheEntry: Sendable {
-    let image: ThumbnailImageBox
-    let cost: Int
-    var lastAccess: UInt64
 }
 
 private struct ThumbnailIdentity: Hashable, Sendable {
@@ -54,31 +48,59 @@ private final class ShareableWindowBox: @unchecked Sendable {
 
 /// A process-wide permit pool for actual ScreenCaptureKit calls. Refresh actor
 /// reentrancy can never raise capture concurrency above this limit.
-private actor ThumbnailCaptureLimiter {
+actor ThumbnailCaptureLimiter {
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Bool, Never>
+    }
+
     private let limit: Int
     private var active = 0
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var waiters: [Waiter] = []
 
     init(limit: Int) {
         self.limit = max(1, limit)
     }
 
-    func run(
-        _ operation: @escaping @Sendable () async -> ThumbnailImageBox?
-    ) async -> ThumbnailImageBox? {
-        await acquire()
+    func run<Value: Sendable>(
+        _ operation: @escaping @Sendable () async -> Value?
+    ) async -> Value? {
+        guard await acquire() else { return nil }
         defer { release() }
         guard !Task.isCancelled else { return nil }
-        return await operation()
+        let result = await operation()
+        guard !Task.isCancelled else { return nil }
+        return result
     }
 
-    private func acquire() async {
+#if DEBUG
+    func debugCounts() -> (active: Int, waiting: Int) {
+        (active, waiters.count)
+    }
+#endif
+
+    private func acquire() async -> Bool {
+        guard !Task.isCancelled else { return false }
         if active < limit {
             active += 1
-            return
+            return true
         }
-        await withCheckedContinuation { continuation in
-            waiters.append(continuation)
+
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume(returning: false)
+                } else {
+                    waiters.append(
+                        Waiter(id: id, continuation: continuation)
+                    )
+                }
+            }
+        } onCancel: {
+            Task {
+                await self.cancelWaiter(id)
+            }
         }
     }
 
@@ -86,8 +108,15 @@ private actor ThumbnailCaptureLimiter {
         if waiters.isEmpty {
             active -= 1
         } else {
-            waiters.removeFirst().resume()
+            waiters.removeFirst().continuation.resume(returning: true)
         }
+    }
+
+    private func cancelWaiter(_ id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        waiters.remove(at: index).continuation.resume(returning: false)
     }
 }
 
@@ -99,9 +128,11 @@ public actor ThumbnailService: ThumbnailProviding {
     public static let maximumCount = 120
     public static let maximumConcurrentCaptures = 3
 
-    private var cache: [ThumbnailIdentity: ThumbnailCacheEntry] = [:]
-    private var cacheCost = 0
-    private var cacheAccessSequence: UInt64 = 0
+    private var cache: [ThumbnailIdentity: ThumbnailImageBox] = [:]
+    private var cacheBudget = BoundedCostLRU<ThumbnailIdentity>(
+        totalCostLimit: maximumMemoryCost,
+        countLimit: maximumCount
+    )
     private var requestGeneration: UInt64 = 0
     private var inFlight: [ThumbnailIdentity: ThumbnailCaptureFlight] = [:]
     private let captureLimiter = ThumbnailCaptureLimiter(
@@ -112,20 +143,18 @@ public actor ThumbnailService: ThumbnailProviding {
 
     public func cachedThumbnail(for window: WindowRecord) -> CGImage? {
         let identity = ThumbnailIdentity(window)
-        guard var entry = cache[identity] else { return nil }
-        cacheAccessSequence &+= 1
-        entry.lastAccess = cacheAccessSequence
-        cache[identity] = entry
-        return entry.image.image
+        guard let image = cache[identity] else { return nil }
+        cacheBudget.touch(identity)
+        return image.image
     }
 
     public func refresh(
         _ windows: [WindowRecord],
         priority: [WindowKey],
         targetSize: CGSize = CGSize(width: 640, height: 400)
-    ) async {
+    ) async -> Set<WindowKey> {
         guard CGPreflightScreenCaptureAccess(), !windows.isEmpty else {
-            return
+            return []
         }
 
         let generation = requestGeneration
@@ -141,10 +170,13 @@ public actor ThumbnailService: ThumbnailProviding {
         do {
             content = try await SCShareableContent.current
         } catch {
-            return
+            TabListLog.thumbnails.error(
+                "ScreenCaptureKit shareable-content enumeration failed"
+            )
+            return []
         }
         guard generation == requestGeneration, !Task.isCancelled else {
-            return
+            return []
         }
 
         let requestedIDs = Set(ordered.map(\.id.windowID))
@@ -177,7 +209,9 @@ public actor ThumbnailService: ThumbnailProviding {
             let token = UUID()
             let limiter = captureLimiter
             let task = Task.detached(priority: .userInitiated) {
+                () -> ThumbnailImageBox? in
                 await limiter.run {
+                    () -> ThumbnailImageBox? in
                     guard !Task.isCancelled,
                           let image = await Self.capture(
                               window: window,
@@ -196,6 +230,7 @@ public actor ThumbnailService: ThumbnailProviding {
             scheduled.append((identity, flight))
         }
 
+        var capturedKeys: Set<WindowKey> = []
         for scheduledCapture in scheduled {
             let image = await scheduledCapture.flight.task.value
             if inFlight[scheduledCapture.identity]?.token
@@ -210,31 +245,33 @@ public actor ThumbnailService: ThumbnailProviding {
             let (cost, overflow) = image.image.bytesPerRow
                 .multipliedReportingOverflow(by: image.image.height)
             guard !overflow else { continue }
-            store(
+            if store(
                 image.image,
                 for: scheduledCapture.identity,
                 cost: cost
-            )
+            ) {
+                capturedKeys.insert(scheduledCapture.identity.key)
+            }
         }
+        return capturedKeys
     }
 
     public func cancelPending() async {
         requestGeneration &+= 1
-        let flights = Array(inFlight)
-        for (_, flight) in flights {
+        let flights = Array(inFlight.values)
+        inFlight.removeAll(keepingCapacity: true)
+        for flight in flights {
             flight.task.cancel()
         }
-        for (identity, flight) in flights {
-            _ = await flight.task.value
-            if inFlight[identity]?.token == flight.token {
-                inFlight[identity] = nil
-            }
-        }
+        // Do not await ScreenCaptureKit here. Dismissal and permission
+        // revocation must return immediately even if an OS capture call is
+        // slow to observe cancellation. Generation checks prevent any late
+        // result from entering the cache.
     }
 
     public func purge() async {
         cache.removeAll(keepingCapacity: false)
-        cacheCost = 0
+        cacheBudget.removeAll()
         await cancelPending()
     }
 
@@ -285,33 +322,13 @@ public actor ThumbnailService: ThumbnailProviding {
         _ image: CGImage,
         for identity: ThumbnailIdentity,
         cost: Int
-    ) {
-        guard cost > 0, cost <= Self.maximumMemoryCost else {
-            return
+    ) -> Bool {
+        let insertion = cacheBudget.insert(identity, cost: cost)
+        guard insertion.accepted else { return false }
+        for evicted in insertion.evicted {
+            cache[evicted] = nil
         }
-
-        if let previous = cache.removeValue(forKey: identity) {
-            cacheCost -= previous.cost
-        }
-        while !cache.isEmpty,
-              cache.count >= Self.maximumCount
-                || cacheCost + cost > Self.maximumMemoryCost {
-            guard let oldestKey = cache.min(
-                by: { $0.value.lastAccess < $1.value.lastAccess }
-            )?.key,
-                  let removed = cache.removeValue(forKey: oldestKey)
-            else {
-                break
-            }
-            cacheCost -= removed.cost
-        }
-
-        cacheAccessSequence &+= 1
-        cache[identity] = ThumbnailCacheEntry(
-            image: ThumbnailImageBox(image),
-            cost: cost,
-            lastAccess: cacheAccessSequence
-        )
-        cacheCost += cost
+        cache[identity] = ThumbnailImageBox(image)
+        return true
     }
 }

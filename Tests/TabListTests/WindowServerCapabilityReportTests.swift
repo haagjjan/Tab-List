@@ -1,7 +1,9 @@
-import XCTest
+import Testing
 @testable import TabList
 
-final class WindowServerCapabilityReportTests: XCTestCase {
+@Suite
+struct WindowServerCapabilityReportTests {
+    @Test
     func testMissingSpaceInventorySurfacesFallbackWarning() {
         let report = WindowServerCapabilityReport(
             detected: [
@@ -21,6 +23,7 @@ final class WindowServerCapabilityReportTests: XCTestCase {
         XCTAssertTrue(report.usesPublicFallbacks)
     }
 
+    @Test
     func testAllRequiredWindowCapabilitiesAvoidFallbackWarning() {
         let required: WindowServerCapabilities = [
             .spaceInventory,

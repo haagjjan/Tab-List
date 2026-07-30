@@ -83,6 +83,9 @@ public final class WindowActionService: WindowActuating, @unchecked Sendable {
         guard operation.isSuccess else { return map(operation) }
 
         guard await waitForFocus(key, timeout: .milliseconds(500)) else {
+            TabListLog.windowActions.warning(
+                "Exact focus verification timed out for pid \(key.pid, privacy: .private(mask: .hash)) window \(key.windowID, privacy: .private(mask: .hash))"
+            )
             return .timedOut
         }
         await registry.noteFocused(key)
@@ -126,6 +129,9 @@ public final class WindowActionService: WindowActuating, @unchecked Sendable {
         // The most common reason a successful close-button press leaves the
         // window alive after the bounded verification period is a document
         // confirmation sheet.
+        TabListLog.windowActions.notice(
+            "Window close requires application confirmation for pid \(key.pid, privacy: .private(mask: .hash)) window \(key.windowID, privacy: .private(mask: .hash))"
+        )
         _ = await activate(key)
         return .confirmationRequired
     }

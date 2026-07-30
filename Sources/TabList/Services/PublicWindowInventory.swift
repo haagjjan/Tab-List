@@ -86,6 +86,9 @@ public actor PublicWindowInventory: WindowInventoryProviding {
             [.optionAll, .excludeDesktopElements],
             kCGNullWindowID
         ) as? [[String: Any]] else {
+            TabListLog.registry.error(
+                "CGWindowListCopyWindowInfo returned no window inventory"
+            )
             return WindowInventoryResult(
                 windows: [],
                 visibleSpaceIDs: [],
@@ -138,9 +141,11 @@ public actor PublicWindowInventory: WindowInventoryProviding {
             }
         candidates.append(contentsOf: accessibilityOnlyCandidates)
 
-        let candidateByKey = Dictionary(
-            uniqueKeysWithValues: candidates.map { ($0.key, $0) }
-        )
+        let candidateByKey = candidates.reduce(
+            into: [WindowKey: PublicWindowCandidate]()
+        ) { result, candidate in
+            result[candidate.key] = candidate
+        }
 
         var records: [WindowRecord] = []
         records.reserveCapacity(candidates.count)
@@ -221,6 +226,9 @@ public actor PublicWindowInventory: WindowInventoryProviding {
             candidates: candidateByKey
         )
         let retainedKeys = Set(filteredRecords.map(\.id))
+        TabListLog.registry.debug(
+            "Discovered \(filteredRecords.count, privacy: .public) eligible windows across \(visibleSpaces.count, privacy: .public) visible Spaces"
+        )
         return WindowInventoryResult(
             windows: filteredRecords,
             visibleSpaceIDs: visibleSpaces,

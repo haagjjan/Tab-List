@@ -1,8 +1,9 @@
 import AppKit
+import CoreGraphics
 import TabListCore
 
 @MainActor
-final class SwitcherPanelController: NSWindowController, NSCollectionViewDataSource, NSCollectionViewDelegate {
+final class SwitcherPanelController: NSWindowController, NSCollectionViewDelegate {
     var onActivate: ((WindowKey) -> Void)?
     var onClose: ((WindowKey) -> Void)?
 
@@ -10,13 +11,32 @@ final class SwitcherPanelController: NSWindowController, NSCollectionViewDataSou
     private let scrollView = NSScrollView()
     private let collectionView = NSCollectionView()
     private let flowLayout = NSCollectionViewFlowLayout()
+    private var dataSource:
+        NSCollectionViewDiffableDataSource<Int, WindowKey>!
 
     private var items: [SwitcherDisplayItem] = []
+    private var itemsByKey: [WindowKey: SwitcherDisplayItem] = [:]
     private var selectedIndex: Int?
     private var currentPresentation: PresentationMode = .thumbnails
     private var currentPanelSize: PanelSize = .auto
     private var currentTheme: ThemePreference = .system
+    private var currentDisplayID: CGDirectDisplayID?
     private var opacity: Double = 0.88
+
+    var backingScaleFactor: CGFloat {
+        window?.backingScaleFactor ?? 2
+    }
+
+    var visibleWindowKeys: [WindowKey] {
+        collectionView.visibleItems()
+            .compactMap { collectionView.indexPath(for: $0) }
+            .sorted { $0.item < $1.item }
+            .compactMap { indexPath in
+                items.indices.contains(indexPath.item)
+                    ? items[indexPath.item].window.id
+                    : nil
+            }
+    }
 
     init() {
         let panel = NSPanel(
@@ -49,18 +69,25 @@ final class SwitcherPanelController: NSWindowController, NSCollectionViewDataSou
         presentation: PresentationMode,
         panelSize: PanelSize,
         theme: ThemePreference,
-        opacity: Double
+        opacity: Double,
+        displayID: CGDirectDisplayID?
     ) {
         guard !items.isEmpty, let panel = window else { return }
-        self.items = items
+        let cellStyleChanged =
+            currentPresentation != presentation || currentTheme != theme
+        let changedKeys = replaceItems(
+            items,
+            forceReload: cellStyleChanged
+        )
         self.selectedIndex = min(max(0, selectedIndex), items.count - 1)
         currentPresentation = presentation
         currentPanelSize = panelSize
         currentTheme = theme
+        currentDisplayID = displayID
         self.opacity = min(max(opacity, 0.70), 1.0)
 
         applyAppearance()
-        collectionView.reloadData()
+        applyDataSnapshot(reloading: changedKeys)
         resizeAndCenter(panel)
         updateSelection(scroll: false)
         panel.orderFrontRegardless()
@@ -68,9 +95,9 @@ final class SwitcherPanelController: NSWindowController, NSCollectionViewDataSou
     }
 
     func update(items: [SwitcherDisplayItem], selectedIndex: Int) {
-        self.items = items
+        let changedKeys = replaceItems(items)
         self.selectedIndex = items.isEmpty ? nil : min(max(0, selectedIndex), items.count - 1)
-        collectionView.reloadData()
+        applyDataSnapshot(reloading: changedKeys)
         if items.isEmpty {
             hide()
         } else {
@@ -90,44 +117,9 @@ final class SwitcherPanelController: NSWindowController, NSCollectionViewDataSou
     func hide() {
         window?.orderOut(nil)
         items.removeAll(keepingCapacity: true)
+        itemsByKey.removeAll(keepingCapacity: true)
         selectedIndex = nil
-        collectionView.reloadData()
-    }
-
-    func numberOfSections(in collectionView: NSCollectionView) -> Int { 1 }
-
-    func collectionView(_ collectionView: NSCollectionView, numberOfItemsInSection section: Int) -> Int {
-        items.count
-    }
-
-    func collectionView(
-        _ collectionView: NSCollectionView,
-        itemForRepresentedObjectAt indexPath: IndexPath
-    ) -> NSCollectionViewItem {
-        guard
-            let cell = collectionView.makeItem(
-                withIdentifier: SwitcherCollectionItem.identifier,
-                for: indexPath
-            ) as? SwitcherCollectionItem
-        else {
-            return NSCollectionViewItem()
-        }
-
-        let item = items[indexPath.item]
-        cell.configure(
-            with: item,
-            presentation: currentPresentation,
-            position: indexPath.item + 1,
-            total: items.count,
-            activateHandler: { [weak self] in
-                self?.onActivate?(item.window.id)
-            },
-            closeHandler: { [weak self] in
-                self?.onClose?(item.window.id)
-            }
-        )
-        cell.isSelected = indexPath.item == selectedIndex
-        return cell
+        applyDataSnapshot(reloading: [])
     }
 
     private func configureContent() {
@@ -154,7 +146,6 @@ final class SwitcherPanelController: NSWindowController, NSCollectionViewDataSou
         flowLayout.sectionInset = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
 
         collectionView.collectionViewLayout = flowLayout
-        collectionView.dataSource = self
         collectionView.delegate = self
         collectionView.isSelectable = true
         collectionView.allowsMultipleSelection = false
@@ -163,6 +154,32 @@ final class SwitcherPanelController: NSWindowController, NSCollectionViewDataSou
             SwitcherCollectionItem.self,
             forItemWithIdentifier: SwitcherCollectionItem.identifier
         )
+        dataSource = NSCollectionViewDiffableDataSource<Int, WindowKey>(
+            collectionView: collectionView
+        ) { [weak self] collectionView, indexPath, key in
+            guard let self,
+                  let item = self.itemsByKey[key],
+                  let cell = collectionView.makeItem(
+                      withIdentifier: SwitcherCollectionItem.identifier,
+                      for: indexPath
+                  ) as? SwitcherCollectionItem else {
+                return NSCollectionViewItem()
+            }
+            cell.configure(
+                with: item,
+                presentation: self.currentPresentation,
+                position: indexPath.item + 1,
+                total: self.items.count,
+                activateHandler: { [weak self] in
+                    self?.onActivate?(key)
+                },
+                closeHandler: { [weak self] in
+                    self?.onClose?(key)
+                }
+            )
+            cell.isSelected = indexPath.item == self.selectedIndex
+            return cell
+        }
         collectionView.setAccessibilityRole(.list)
         scrollView.documentView = collectionView
 
@@ -183,7 +200,9 @@ final class SwitcherPanelController: NSWindowController, NSCollectionViewDataSou
     }
 
     private func resizeAndCenter(_ panel: NSWindow) {
-        let screen = Self.pointerScreen() ?? NSScreen.main ?? NSScreen.screens.first
+        let screen = Self.screen(for: currentDisplayID)
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
         guard let screen else { return }
         let visibleFrame = screen.visibleFrame
         let metrics = LayoutCalculator.metrics(
@@ -229,6 +248,41 @@ final class SwitcherPanelController: NSWindowController, NSCollectionViewDataSou
         }
     }
 
+    private func replaceItems(
+        _ newItems: [SwitcherDisplayItem],
+        forceReload: Bool = false
+    ) -> Set<WindowKey> {
+        let changedKeys = SwitcherDisplayReloadPlanner.keys(
+            previous: items,
+            next: newItems,
+            forceReload: forceReload
+        )
+        let next = newItems.reduce(
+            into: [WindowKey: SwitcherDisplayItem]()
+        ) { result, item in
+            result[item.window.id] = item
+        }
+        items = newItems
+        itemsByKey = next
+        return changedKeys
+    }
+
+    private func applyDataSnapshot(reloading changedKeys: Set<WindowKey>) {
+        guard let dataSource else { return }
+        let identifiers = items.map(\.window.id)
+        let previous = Set(dataSource.snapshot().itemIdentifiers)
+        var snapshot = NSDiffableDataSourceSnapshot<Int, WindowKey>()
+        snapshot.appendSections([0])
+        snapshot.appendItems(identifiers, toSection: 0)
+        let changedRetained = identifiers.filter {
+            previous.contains($0) && changedKeys.contains($0)
+        }
+        if !changedRetained.isEmpty {
+            snapshot.reloadItems(changedRetained)
+        }
+        dataSource.apply(snapshot, animatingDifferences: false)
+    }
+
     private func applyAppearance() {
         window?.alphaValue = 1
         switch currentTheme {
@@ -258,8 +312,16 @@ final class SwitcherPanelController: NSWindowController, NSCollectionViewDataSou
             : .utilityWindow
     }
 
-    private static func pointerScreen() -> NSScreen? {
-        let pointer = NSEvent.mouseLocation
-        return NSScreen.screens.first { NSMouseInRect(pointer, $0.frame, false) }
+    private static func screen(
+        for displayID: CGDirectDisplayID?
+    ) -> NSScreen? {
+        guard let displayID else { return nil }
+        let key = NSDeviceDescriptionKey("NSScreenNumber")
+        return NSScreen.screens.first { screen in
+            guard let number = screen.deviceDescription[key] as? NSNumber else {
+                return false
+            }
+            return CGDirectDisplayID(number.uint32Value) == displayID
+        }
     }
 }

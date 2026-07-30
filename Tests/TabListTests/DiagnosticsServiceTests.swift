@@ -1,9 +1,11 @@
 import Foundation
 import TabListCore
-import XCTest
+import Testing
 @testable import TabList
 
-final class DiagnosticsServiceTests: XCTestCase {
+@Suite
+struct DiagnosticsServiceTests {
+    @Test
     func testExportOmitsTitlesAndUsesPerExportBundlePseudonyms() throws {
         let sensitiveTitle = "Acquisition — confidential"
         let snapshot = WindowSnapshot(

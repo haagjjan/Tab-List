@@ -93,6 +93,7 @@ private struct AppearanceSettingsView: View {
             Section("Preview") {
                 AppearancePreview(
                     presentation: model.settings.presentation,
+                    panelSize: model.settings.panelSize,
                     theme: model.settings.theme,
                     opacity: model.settings.opacity
                 )
@@ -141,6 +142,7 @@ private struct AppearanceSettingsView: View {
 
 private struct AppearancePreview: View {
     let presentation: TabListCore.PresentationMode
+    let panelSize: PanelSize
     let theme: ThemePreference
     let opacity: Double
 
@@ -154,6 +156,7 @@ private struct AppearancePreview: View {
 
             previewItems
             .padding(16)
+            .frame(width: previewPanelWidth)
             .background(background)
             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             .shadow(radius: 10, y: 5)
@@ -182,7 +185,40 @@ private struct AppearancePreview: View {
     @ViewBuilder
     private func previewItem(_ index: Int) -> some View {
         let symbols = ["safari", "folder", "doc.text"]
-        let titles = ["Research", "Projects", "Notes"]
+        let titles = [
+            String(
+                localized: "settings.preview.title.research",
+                defaultValue: "Research",
+                comment: "Sample window title in the appearance preview."
+            ),
+            String(
+                localized: "settings.preview.title.projects",
+                defaultValue: "Projects",
+                comment: "Sample window title in the appearance preview."
+            ),
+            String(
+                localized: "settings.preview.title.notes",
+                defaultValue: "Notes",
+                comment: "Sample window title in the appearance preview."
+            ),
+        ]
+        let applicationNames = [
+            String(
+                localized: "settings.preview.application.safari",
+                defaultValue: "Safari",
+                comment: "Sample application name in the appearance preview."
+            ),
+            String(
+                localized: "settings.preview.application.finder",
+                defaultValue: "Finder",
+                comment: "Sample application name in the appearance preview."
+            ),
+            String(
+                localized: "settings.preview.application.textedit",
+                defaultValue: "TextEdit",
+                comment: "Sample application name in the appearance preview."
+            ),
+        ]
         switch presentation {
         case .thumbnails:
             VStack(alignment: .leading, spacing: 5) {
@@ -192,10 +228,12 @@ private struct AppearancePreview: View {
                         Image(systemName: symbols[index])
                             .font(.title)
                     }
-                Text(titles[index]).font(.caption.bold()).lineLimit(1)
+                Text(verbatim: titles[index])
+                    .font(.caption.bold())
+                    .lineLimit(1)
             }
             .padding(6)
-            .frame(width: 110, height: 100)
+            .frame(width: previewTileWidth, height: 100)
             .background(index == 0 ? Color.accentColor.opacity(0.16) : Color.primary.opacity(0.04))
             .overlay {
                 RoundedRectangle(cornerRadius: 9)
@@ -204,25 +242,27 @@ private struct AppearancePreview: View {
         case .appIcons:
             VStack(spacing: 7) {
                 Image(systemName: symbols[index]).font(.system(size: 34))
-                Text(titles[index]).font(.caption.bold()).lineLimit(1)
+                Text(verbatim: titles[index])
+                    .font(.caption.bold())
+                    .lineLimit(1)
             }
-            .frame(width: 105, height: 90)
+            .frame(width: previewTileWidth, height: 90)
             .background(index == 0 ? Color.accentColor.opacity(0.16) : Color.primary.opacity(0.04))
             .clipShape(RoundedRectangle(cornerRadius: 9))
         case .titles:
             HStack(spacing: 8) {
                 Image(systemName: symbols[index])
                     .frame(width: 22)
-                Text(["Safari", "Finder", "TextEdit"][index])
+                Text(verbatim: applicationNames[index])
                     .font(.caption.bold())
                     .frame(width: 70, alignment: .leading)
-                Text(titles[index])
+                Text(verbatim: titles[index])
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
             }
             .padding(.horizontal, 9)
-            .frame(width: 330, height: 34)
+            .frame(width: previewPanelWidth - 32, height: 34)
             .background(index == 0 ? Color.accentColor.opacity(0.16) : Color.primary.opacity(0.04))
             .clipShape(RoundedRectangle(cornerRadius: 8))
         }
@@ -236,6 +276,24 @@ private struct AppearancePreview: View {
             AnyShapeStyle(Color.white.opacity(opacity))
         case .dark:
             AnyShapeStyle(Color.black.opacity(opacity))
+        }
+    }
+
+    private var previewPanelWidth: CGFloat {
+        switch panelSize {
+        case .small: 300
+        case .medium: 370
+        case .large: 440
+        case .auto: 370
+        }
+    }
+
+    private var previewTileWidth: CGFloat {
+        switch panelSize {
+        case .small: 82
+        case .medium: 105
+        case .large: 126
+        case .auto: 105
         }
     }
 }
@@ -264,20 +322,35 @@ private struct ControlsSettingsView: View {
             }
 
             Section("While switching") {
-                keyboardRow(keys: "⇧", action: "Move backward")
-                keyboardRow(keys: "⎋", action: "Cancel")
-                keyboardRow(keys: "⌫", action: "Close selected window")
-                keyboardRow(keys: "Release modifier", action: "Activate selected window")
+                keyboardRow(
+                    keyLabel: Text(verbatim: "⇧"),
+                    action: "Move backward"
+                )
+                keyboardRow(
+                    keyLabel: Text(verbatim: "⎋"),
+                    action: "Cancel"
+                )
+                keyboardRow(
+                    keyLabel: Text(verbatim: "⌫"),
+                    action: "Close selected window"
+                )
+                keyboardRow(
+                    keyLabel: Text("Release modifier"),
+                    action: "Activate selected window"
+                )
             }
         }
         .formStyle(.grouped)
     }
 
-    private func keyboardRow(keys: String, action: String) -> some View {
+    private func keyboardRow(
+        keyLabel: Text,
+        action: LocalizedStringKey
+    ) -> some View {
         LabeledContent {
             Text(action).foregroundStyle(.secondary)
         } label: {
-            Text(keys)
+            keyLabel
                 .font(.system(.body, design: .monospaced, weight: .semibold))
         }
     }
@@ -369,8 +442,19 @@ private struct ExceptionsSettingsView: View {
                     Spacer()
                     Menu {
                         ForEach(model.runningApplicationsAvailableForExclusion(), id: \.processIdentifier) { application in
-                            Button(application.localizedName ?? application.bundleIdentifier ?? "Application") {
+                            let applicationName = application.localizedName
+                                ?? application.bundleIdentifier
+                                ?? String(
+                                    localized:
+                                        "settings.exceptions.fallback-application",
+                                    defaultValue: "Application",
+                                    comment:
+                                        "Fallback name for an application whose name and bundle identifier are unavailable."
+                                )
+                            Button {
                                 model.addRunningApplication(application)
+                            } label: {
+                                Text(verbatim: applicationName)
                             }
                         }
                         Divider()
@@ -392,6 +476,7 @@ private struct ExceptionsSettingsView: View {
 
 private struct GeneralSettingsView: View {
     @ObservedObject var model: SettingsViewModel
+    @State private var isShowingResetConfirmation = false
 
     var body: some View {
         Form {
@@ -456,21 +541,83 @@ private struct GeneralSettingsView: View {
                 Button("Export Redacted Diagnostics…") {
                     model.onExportDiagnostics?()
                 }
-                Button("Reset All Settings…", role: .destructive) {
-                    model.resetToDefaults()
+                Button(
+                    String(
+                        localized: "settings.reset.button",
+                        defaultValue: "Reset Preferences…",
+                        comment:
+                            "Button that opens confirmation before resetting preferences."
+                    ),
+                    role: .destructive
+                ) {
+                    isShowingResetConfirmation = true
                 }
+                .accessibilityIdentifier("settings.reset-preferences")
             }
         }
         .formStyle(.grouped)
+        .alert(
+            String(
+                localized: "settings.reset.confirmation.title",
+                defaultValue: "Reset Tab‑List preferences?",
+                comment: "Title of the preference-reset confirmation alert."
+            ),
+            isPresented: $isShowingResetConfirmation
+        ) {
+            Button(
+                String(
+                    localized: "settings.reset.confirmation.action",
+                    defaultValue: "Reset Preferences",
+                    comment:
+                        "Destructive action that confirms preference reset."
+                ),
+                role: .destructive
+            ) {
+                model.resetPreferences()
+            }
+            .accessibilityIdentifier("settings.confirm-reset-preferences")
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                String(
+                    localized: "settings.reset.confirmation.message",
+                    defaultValue:
+                        "This restores all preferences stored by Tab‑List, including appearance, shortcut, filters, exceptions, update checks, and the menu-bar icon. Launch at Login and macOS permissions are not changed.",
+                    comment:
+                        "Explains the exact scope of resetting preferences."
+                )
+            )
+        }
     }
 
-    private func statusRow(_ title: String, granted: Bool) -> some View {
-        LabeledContent(title) {
-            Label(
-                granted ? "Granted" : "Not granted",
-                systemImage: granted ? "checkmark.circle.fill" : "exclamationmark.circle"
+    private func statusRow(
+        _ title: LocalizedStringKey,
+        granted: Bool
+    ) -> some View {
+        let status = granted
+            ? String(
+                localized: "settings.permissions.status.granted",
+                defaultValue: "Granted",
+                comment: "Permission status when access has been granted."
             )
+            : String(
+                localized: "settings.permissions.status.not-granted",
+                defaultValue: "Not granted",
+                comment: "Permission status when access has not been granted."
+            )
+        return LabeledContent {
+            Label {
+                Text(verbatim: status)
+            } icon: {
+                Image(
+                    systemName: granted
+                        ? "checkmark.circle.fill"
+                        : "exclamationmark.circle"
+                )
+            }
             .foregroundStyle(granted ? .green : .orange)
+        } label: {
+            Text(title)
         }
     }
 }
@@ -504,6 +651,17 @@ private struct AboutSettingsView: View {
     private var versionText: String {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "1"
-        return "Version \(version) (\(build))"
+        let format = String(
+            localized: "settings.about.version-format",
+            defaultValue: "Version %1$@ (%2$@)",
+            comment:
+                "Application version and build. First value is version; second is build."
+        )
+        return String(
+            format: format,
+            locale: .current,
+            version,
+            build
+        )
     }
 }

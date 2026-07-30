@@ -25,6 +25,20 @@ Sparkle’s license also carries notices for bsdiff/bspatch, sais-lite, an Ed255
 
 [XcodeGen](https://github.com/yonaskolb/XcodeGen) is an MIT-licensed development tool used to generate the Xcode project. It is not linked into or distributed with the Tab-List application.
 
+[Swift Testing](https://github.com/swiftlang/swift-testing) is used only by
+the portable `TabListCoreTests` and `TabListTests` Swift Package targets. The
+repository pins revision
+`48a471ab313e858258ab0b9b0bf2cea55a50cefb`, tagged
+`swift-6.2-DEVELOPMENT-SNAPSHOT-2025-12-03-a`, to match the installed Swift
+6.2 toolchain. Swift Testing is licensed under Apache License 2.0 with the
+Swift Runtime Library Exception. It is not linked into or distributed with
+the Tab-List application.
+
+[Swift Syntax](https://github.com/swiftlang/swift-syntax) 602.0.0 is a
+transitive development dependency of Swift Testing. It has the same
+Apache License 2.0 with Swift Runtime Library Exception and is not linked
+into or distributed with the Tab-List application.
+
 Apple SDK frameworks are supplied by the operating system and Xcode under Apple’s applicable license terms.
 
 No AltTab source code, assets, or other GPL-licensed implementation material is included in Tab-List.

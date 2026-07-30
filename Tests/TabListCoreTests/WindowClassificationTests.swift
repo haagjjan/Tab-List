@@ -1,20 +1,24 @@
 import CoreGraphics
-import XCTest
+import Testing
 @testable import TabListCore
 
-final class WindowClassificationTests: XCTestCase {
+@Suite
+struct WindowClassificationTests {
+    @Test
     func testStandardAndUntitledWindowFactsAreEligible() {
         let input = TestFixtures.classificationInput()
 
         XCTAssertEqual(WindowClassifier.classify(input), .standard)
     }
 
+    @Test
     func testMissingAccessibilityMetadataFallsBackToWindowServerFacts() {
         let input = TestFixtures.classificationInput(role: nil, subrole: nil)
 
         XCTAssertEqual(WindowClassifier.classify(input), .standard)
     }
 
+    @Test
     func testOwnAndSystemWindowsAreExcluded() {
         var own = TestFixtures.classificationInput()
         own.isOwnedByTabList = true
@@ -33,6 +37,7 @@ final class WindowClassificationTests: XCTestCase {
         )
     }
 
+    @Test
     func testNonzeroLayersAndInvalidGeometryAreExcluded() {
         var layered = TestFixtures.classificationInput()
         layered.layer = 20
@@ -56,6 +61,7 @@ final class WindowClassificationTests: XCTestCase {
         )
     }
 
+    @Test
     func testTransparentAndSpecialSurfacesAreExcluded() {
         var transparent = TestFixtures.classificationInput()
         transparent.alpha = 0
@@ -86,6 +92,7 @@ final class WindowClassificationTests: XCTestCase {
         )
     }
 
+    @Test
     func testUtilityRolesAndSubrolesAreExcluded() {
         let menu = TestFixtures.classificationInput(
             role: "AXMenu",
@@ -106,6 +113,7 @@ final class WindowClassificationTests: XCTestCase {
         )
     }
 
+    @Test
     func testDialogsAndSheetsAreEligible() {
         let dialog = TestFixtures.classificationInput(
             role: "AXDialog",

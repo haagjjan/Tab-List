@@ -1,7 +1,9 @@
-import XCTest
+import Testing
 @testable import TabList
 
-final class GlobalFocusObservationGateTests: XCTestCase {
+@Suite
+struct GlobalFocusObservationGateTests {
+    @Test
     func testAcceptsOnlyTheFrontmostApplicationProcess() {
         XCTAssertTrue(
             GlobalFocusObservationGate.accepts(
@@ -23,6 +25,7 @@ final class GlobalFocusObservationGateTests: XCTestCase {
         )
     }
 
+    @Test
     func testActivationConfirmationRequiresGlobalAndExactWindowFocus() {
         let target = AppTestFixtures.key(1, pid: 100)
 

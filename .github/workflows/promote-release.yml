@@ -1,0 +1,468 @@
+name: Promote Release Candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Draft candidate tag, for example v1.0.0
+        required: true
+        type: string
+      source_commit:
+        description: Exact 40-character source commit recorded in the candidate
+        required: true
+        type: string
+      confirmation:
+        description: Type PROMOTE followed by the tag, for example PROMOTE v1.0.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-promotion-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Validate and publish draft
+    runs-on: macos-26
+    timeout-minutes: 15
+    environment: release-promotion
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - name: Check out default branch
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate deliberate promotion inputs
+        env:
+          TAG: ${{ inputs.tag }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]] || {
+            echo "::error::TAG is not a supported Tab-List release tag"
+            exit 1
+          }
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]] || {
+            echo "::error::SOURCE_COMMIT must contain 40 hexadecimal characters"
+            exit 1
+          }
+          [[ "$CONFIRMATION" == "PROMOTE ${TAG}" ]] || {
+            echo "::error::Confirmation must be exactly: PROMOTE ${TAG}"
+            exit 1
+          }
+
+      - name: Download immutable candidate inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          candidate="$RUNNER_TEMP/candidate"
+          evidence="$RUNNER_TEMP/promotion-evidence"
+          mkdir -p "$candidate" "$evidence"
+          gh release view \
+            "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json assets,isDraft,isPrerelease,tagName,targetCommitish,url \
+            > "$evidence/release-before.json"
+          jq -S '{
+            isDraft,
+            isPrerelease,
+            tagName,
+            targetCommitish,
+            assets: (
+              [.assets[] | {
+                name,
+                size,
+                digest,
+                contentType
+              }] | sort_by(.name)
+            )
+          }' "$evidence/release-before.json" \
+            > "$evidence/release-before-normalized.json"
+          jq -e \
+            --arg tag "$TAG" \
+            '.isDraft == true and .tagName == $tag' \
+            "$evidence/release-before.json" >/dev/null || {
+            echo "::error::The requested release is not a draft candidate"
+            exit 1
+          }
+          gh release download \
+            "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir "$candidate"
+
+      - name: Verify checksums, manifest, and release evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          candidate="$RUNNER_TEMP/candidate"
+          promotion_evidence="$RUNNER_TEMP/promotion-evidence"
+          manifest="$candidate/release-manifest.json"
+          checksums="$candidate/SHA256SUMS"
+          release_json="$promotion_evidence/release-before.json"
+          version="${TAG#v}"
+
+          for required in \
+            "TabList-${version}.zip" \
+            "TabList-${version}.dmg" \
+            appcast.xml \
+            release-manifest.json \
+            release-evidence.zip \
+            SHA256SUMS
+          do
+            [[ -f "$candidate/$required" ]] || {
+              echo "::error::Candidate asset is missing: ${required}"
+              exit 1
+            }
+          done
+
+          actual_assets="$(
+            find "$candidate" -maxdepth 1 -type f -exec basename {} \; |
+              LC_ALL=C sort
+          )"
+          expected_assets="$(
+            printf '%s\n' \
+              "SHA256SUMS" \
+              "TabList-${version}.dmg" \
+              "TabList-${version}.zip" \
+              "appcast.xml" \
+              "release-evidence.zip" \
+              "release-manifest.json" |
+              LC_ALL=C sort
+          )"
+          [[ "$actual_assets" == "$expected_assets" ]] || {
+            echo "::error::The draft contains an unexpected asset set"
+            diff \
+              <(printf '%s\n' "$expected_assets") \
+              <(printf '%s\n' "$actual_assets") || true
+            exit 1
+          }
+
+          (
+            cd "$candidate"
+            shasum -a 256 -c SHA256SUMS
+          )
+          jq empty "$manifest"
+          jq -e \
+            --arg tag "$TAG" \
+            --arg version "$version" \
+            --arg sourceCommit "$SOURCE_COMMIT" \
+            '.
+              | .schemaVersion == 1
+              and .result == "passed"
+              and .tag == $tag
+              and .version == $version
+              and (.sourceCommit | ascii_downcase)
+                == ($sourceCommit | ascii_downcase)
+              and .application.architectures == ["arm64"]
+              and .application.hardenedRuntime == true
+              and .application.sandboxed == false
+              and .application.getTaskAllow == false
+              and .application.stapled == true
+              and .application.gatekeeperAccepted == true
+              and .artifacts.zip.sparkleSignatureVerified == true
+              and .artifacts.dmg.stapled == true
+              and .artifacts.dmg.gatekeeperAccepted == true' \
+            "$manifest" >/dev/null || {
+            echo "::error::The release manifest failed policy validation"
+            exit 1
+          }
+          jq -e \
+            --arg sourceCommit "$SOURCE_COMMIT" \
+            --argjson prerelease "$(jq '.prerelease' "$manifest")" \
+            '(.targetCommitish | ascii_downcase)
+              == ($sourceCommit | ascii_downcase)
+              and .isPrerelease == $prerelease' \
+            "$release_json" >/dev/null || {
+            echo "::error::Draft release metadata does not match the manifest"
+            exit 1
+          }
+
+          git cat-file -e "${SOURCE_COMMIT}^{commit}"
+          git merge-base --is-ancestor \
+            "$SOURCE_COMMIT" \
+            "origin/${DEFAULT_BRANCH}" || {
+            echo "::error::Candidate commit is not reachable from ${DEFAULT_BRANCH}"
+            exit 1
+          }
+
+          remote_tag_commit="$(
+            git ls-remote origin "refs/tags/${TAG}^{}" |
+              awk 'NR == 1 {print $1}'
+          )"
+          if [[ -z "$remote_tag_commit" ]]; then
+            remote_tag_commit="$(
+              git ls-remote origin "refs/tags/${TAG}" |
+                awk 'NR == 1 {print $1}'
+            )"
+          fi
+          if [[ -n "$remote_tag_commit" ]]; then
+            normalized_remote_tag="$(
+              printf '%s' "$remote_tag_commit" |
+                tr '[:upper:]' '[:lower:]'
+            )"
+            normalized_source_commit="$(
+              printf '%s' "$SOURCE_COMMIT" |
+                tr '[:upper:]' '[:lower:]'
+            )"
+            [[ "$normalized_remote_tag" == "$normalized_source_commit" ]] || {
+              echo "::error::Existing tag does not identify the candidate commit"
+              exit 1
+            }
+            tag_state=existing
+          else
+            tag_state=pending-publication
+          fi
+
+          extracted="$RUNNER_TEMP/candidate-evidence"
+          mkdir -p "$extracted"
+          ditto -x -k "$candidate/release-evidence.zip" "$extracted"
+          for required in \
+            verification/release-manifest.json \
+            verification/SHA256SUMS \
+            notarization/app/submission.json \
+            notarization/app/submission.stderr.log \
+            notarization/app/notary-log.json \
+            notarization/app/summary.json \
+            notarization/dmg/submission.json \
+            notarization/dmg/submission.stderr.log \
+            notarization/dmg/notary-log.json \
+            notarization/dmg/summary.json \
+            export-options.plist \
+            workflow-metadata.json
+          do
+            [[ -f "$extracted/$required" ]] || {
+              echo "::error::Candidate evidence is missing: ${required}"
+              exit 1
+            }
+          done
+          cmp \
+            "$manifest" \
+            "$extracted/verification/release-manifest.json"
+          jq -e \
+            --arg appCDHash "$(jq -r '.application.cdHash' "$manifest")" \
+            '.result == "passed"
+              and .artifactType == "app"
+              and .status == "Accepted"
+              and .finalCDHash == $appCDHash
+              and .stapled == true
+              and .gatekeeperAccepted == true' \
+            "$extracted/notarization/app/summary.json" >/dev/null
+          jq -e \
+            --arg dmgSha "$(jq -r '.artifacts.dmg.sha256' "$manifest")" \
+            '.result == "passed"
+              and .artifactType == "dmg"
+              and .status == "Accepted"
+              and .finalSha256 == $dmgSha
+              and .stapled == true
+              and .gatekeeperAccepted == true' \
+            "$extracted/notarization/dmg/summary.json" >/dev/null
+          jq -e \
+            --arg tag "$TAG" \
+            --arg sourceCommit "$SOURCE_COMMIT" \
+            '.tag == $tag
+              and (.sourceCommit | ascii_downcase)
+                == ($sourceCommit | ascii_downcase)' \
+            "$extracted/workflow-metadata.json" >/dev/null
+          candidate_run_id="$(
+            jq -r '.runID' "$extracted/workflow-metadata.json"
+          )"
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${candidate_run_id}" \
+            > "$promotion_evidence/candidate-workflow-run.json"
+          jq -e \
+            --arg sourceCommit "$SOURCE_COMMIT" \
+            '.conclusion == "success"
+              and (
+                [
+                  (.head_sha // ""),
+                  (.head_commit.id // "")
+                ]
+                | map(ascii_downcase)
+                | index(($sourceCommit | ascii_downcase)) != null
+              )' \
+            "$promotion_evidence/candidate-workflow-run.json" >/dev/null || {
+            echo "::error::The candidate workflow did not finish successfully"
+            exit 1
+          }
+
+          immutable="$RUNNER_TEMP/immutable-candidate-evidence"
+          mkdir -p "$immutable"
+          gh run download \
+            "$candidate_run_id" \
+            --repo "$GITHUB_REPOSITORY" \
+            --name "Release-Candidate-Evidence-${TAG}" \
+            --dir "$immutable"
+          for required in \
+            release-manifest.json \
+            SHA256SUMS \
+            release-evidence.zip
+          do
+            [[ -f "$immutable/$required" ]] || {
+              echo "::error::Immutable workflow evidence is missing: ${required}"
+              exit 1
+            }
+          done
+          cmp "$manifest" "$immutable/release-manifest.json"
+          cmp "$checksums" "$immutable/SHA256SUMS"
+          cmp \
+            "$candidate/release-evidence.zip" \
+            "$immutable/release-evidence.zip"
+
+          method="$(
+            /usr/libexec/PlistBuddy \
+              -c "Print :method" \
+              "$extracted/export-options.plist"
+          )"
+          export_team="$(
+            /usr/libexec/PlistBuddy \
+              -c "Print :teamID" \
+              "$extracted/export-options.plist"
+          )"
+          [[ "$method" == "developer-id" ]] ||
+            { echo "::error::Candidate was not exported for Developer ID"; exit 1; }
+          [[ "$export_team" == \
+             "$(jq -r '.application.teamIdentifier' "$manifest")" ]] ||
+            { echo "::error::Export team does not match the manifest"; exit 1; }
+
+          appcast_url="$(
+            xmllint \
+              --xpath \
+              "string((//*[local-name()='item']/*[local-name()='enclosure'])[1]/@url)" \
+              "$candidate/appcast.xml"
+          )"
+          expected_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/TabList-${version}.zip"
+          [[ "$appcast_url" == "$expected_url" ]] || {
+            echo "::error::Appcast URL is not bound to the candidate tag"
+            exit 1
+          }
+
+          jq -n \
+            --arg tag "$TAG" \
+            --arg sourceCommit "$SOURCE_COMMIT" \
+            --arg tagState "$tag_state" \
+            --arg manifestSha256 "$(
+              shasum -a 256 "$manifest" | awk '{print $1}'
+            )" \
+            --arg evidenceSha256 "$(
+              shasum -a 256 "$candidate/release-evidence.zip" |
+                awk '{print $1}'
+            )" \
+            --arg validatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{
+              schemaVersion: 1,
+              result: "passed",
+              tag: $tag,
+              sourceCommit: $sourceCommit,
+              tagStateBeforePublication: $tagState,
+              manifestSha256: $manifestSha256,
+              evidenceSha256: $evidenceSha256,
+              validatedAt: $validatedAt
+            }' > "$promotion_evidence/promotion-validation.json"
+
+      - name: Recheck draft immutability and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/promotion-evidence"
+          gh release view \
+            "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json assets,isDraft,isPrerelease,tagName,targetCommitish,url \
+            > "$evidence/release-recheck.json"
+          jq -S '{
+            isDraft,
+            isPrerelease,
+            tagName,
+            targetCommitish,
+            assets: (
+              [.assets[] | {
+                name,
+                size,
+                digest,
+                contentType
+              }] | sort_by(.name)
+            )
+          }' "$evidence/release-recheck.json" \
+            > "$evidence/release-recheck-normalized.json"
+          cmp \
+            "$evidence/release-before-normalized.json" \
+            "$evidence/release-recheck-normalized.json"
+          jq -e '.isDraft == true' \
+            "$evidence/release-recheck.json" >/dev/null
+
+          version="${TAG#v}"
+          gh release edit \
+            "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false \
+            --title "Tab-List ${version}"
+          gh release view \
+            "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json isDraft,isPrerelease,publishedAt,tagName,targetCommitish,url \
+            > "$evidence/release-after.json"
+          jq -e \
+            --arg tag "$TAG" \
+            '.isDraft == false
+              and .tagName == $tag
+              and .publishedAt != null' \
+            "$evidence/release-after.json" >/dev/null
+
+          fetched=false
+          for attempt in 1 2 3 4 5; do
+            if git fetch --force origin \
+              "refs/tags/${TAG}:refs/tags/${TAG}"
+            then
+              fetched=true
+              break
+            fi
+            echo "Tag is not visible yet (attempt ${attempt}/5)"
+            sleep 2
+          done
+          [[ "$fetched" == "true" ]] || {
+            echo "::error::Published tag did not become visible"
+            exit 1
+          }
+          published_commit="$(git rev-list -n 1 "$TAG")"
+          expected_commit="$(
+            jq -r '.sourceCommit' \
+              "$evidence/promotion-validation.json"
+          )"
+          normalized_published_commit="$(
+            printf '%s' "$published_commit" |
+              tr '[:upper:]' '[:lower:]'
+          )"
+          normalized_expected_commit="$(
+            printf '%s' "$expected_commit" |
+              tr '[:upper:]' '[:lower:]'
+          )"
+          [[ "$normalized_published_commit" == \
+             "$normalized_expected_commit" ]] || {
+            echo "::error::Published tag does not identify the validated commit"
+            exit 1
+          }
+
+      - name: Upload promotion evidence
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: Release-Promotion-Evidence-${{ inputs.tag }}
+          path: ${{ runner.temp }}/promotion-evidence
+          if-no-files-found: warn
+          retention-days: 365

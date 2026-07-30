@@ -1,0 +1,174 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "settings.about.version-format" : {
+      "comment" : "Application version and build. First value is version; second is build.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Version %1$@ (%2$@)"
+          }
+        }
+      }
+    },
+    "settings.exceptions.fallback-application" : {
+      "comment" : "Fallback name for an application whose name and bundle identifier are unavailable.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Application"
+          }
+        }
+      }
+    },
+    "settings.permissions.status.granted" : {
+      "comment" : "Permission status when access has been granted.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Granted"
+          }
+        }
+      }
+    },
+    "settings.permissions.status.not-granted" : {
+      "comment" : "Permission status when access has not been granted.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Not granted"
+          }
+        }
+      }
+    },
+    "settings.preview.application.finder" : {
+      "comment" : "Sample application name in the appearance preview.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Finder"
+          }
+        }
+      }
+    },
+    "settings.preview.application.safari" : {
+      "comment" : "Sample application name in the appearance preview.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Safari"
+          }
+        }
+      }
+    },
+    "settings.preview.application.textedit" : {
+      "comment" : "Sample application name in the appearance preview.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "TextEdit"
+          }
+        }
+      }
+    },
+    "settings.preview.title.notes" : {
+      "comment" : "Sample window title in the appearance preview.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Notes"
+          }
+        }
+      }
+    },
+    "settings.preview.title.projects" : {
+      "comment" : "Sample window title in the appearance preview.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Projects"
+          }
+        }
+      }
+    },
+    "settings.preview.title.research" : {
+      "comment" : "Sample window title in the appearance preview.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Research"
+          }
+        }
+      }
+    },
+    "settings.reset.button" : {
+      "comment" : "Button that opens confirmation before resetting preferences.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reset Preferences…"
+          }
+        }
+      }
+    },
+    "settings.reset.confirmation.action" : {
+      "comment" : "Destructive action that confirms preference reset.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reset Preferences"
+          }
+        }
+      }
+    },
+    "settings.reset.confirmation.message" : {
+      "comment" : "Explains the exact scope of resetting preferences.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "This restores all preferences stored by Tab‑List, including appearance, shortcut, filters, exceptions, update checks, and the menu-bar icon. Launch at Login and macOS permissions are not changed."
+          }
+        }
+      }
+    },
+    "settings.reset.confirmation.title" : {
+      "comment" : "Title of the preference-reset confirmation alert.",
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reset Tab‑List preferences?"
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.0"
+}

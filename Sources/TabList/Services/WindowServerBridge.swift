@@ -367,6 +367,9 @@ public final class WindowServerBridge: @unchecked Sendable {
             frameworkPath: report.frameworkPath
         )
         capabilityLock.unlock()
+        TabListLog.compatibility.error(
+            "Exact private activation was disabled for this process after focus verification failed"
+        )
     }
 
     private static func hasSymbol(
@@ -502,6 +505,9 @@ public final class WindowServerBridge: @unchecked Sendable {
             frameworkPath: report.frameworkPath
         )
         capabilityLock.unlock()
+        TabListLog.compatibility.notice(
+            "WindowServer self-test completed with detected mask \(report.detected.rawValue, privacy: .public) and operational mask \(operational.rawValue, privacy: .public)"
+        )
     }
 
     /// Supplies a real, currently valid window identifier for the harmless

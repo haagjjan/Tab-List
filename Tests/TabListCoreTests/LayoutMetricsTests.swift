@@ -1,10 +1,12 @@
 import CoreGraphics
-import XCTest
+import Testing
 @testable import TabListCore
 
-final class LayoutMetricsTests: XCTestCase {
+@Suite
+struct LayoutMetricsTests {
     private let display = CGRect(x: 0, y: 0, width: 1_440, height: 900)
 
+    @Test
     func testPresetWidthsMatchSpecification() {
         XCTAssertEqual(
             LayoutCalculator.metrics(
@@ -35,6 +37,7 @@ final class LayoutMetricsTests: XCTestCase {
         )
     }
 
+    @Test
     func testThumbnailAndTitleItemSizesMatchSpecification() {
         let thumbnail = LayoutCalculator.metrics(
             preset: .medium,
@@ -55,6 +58,7 @@ final class LayoutMetricsTests: XCTestCase {
         XCTAssertEqual(title.columns, 1)
     }
 
+    @Test
     func testPanelHeightIsLimitedToSeventyTwoPercentAndScrolls() {
         let metrics = LayoutCalculator.metrics(
             preset: .small,
@@ -68,6 +72,7 @@ final class LayoutMetricsTests: XCTestCase {
         XCTAssertEqual(metrics.rows, 50)
     }
 
+    @Test
     func testSmallestAutomaticPresetWithAtMostThreeRowsIsChosen() {
         let sixItems = LayoutCalculator.metrics(
             preset: .auto,
@@ -88,6 +93,7 @@ final class LayoutMetricsTests: XCTestCase {
         XCTAssertEqual(sevenItems.rows, 3)
     }
 
+    @Test
     func testAutomaticTitleModeUsesCompactSmallRows() {
         let metrics = LayoutCalculator.metrics(
             preset: .auto,
@@ -101,6 +107,7 @@ final class LayoutMetricsTests: XCTestCase {
         XCTAssertEqual(metrics.rows, 8)
     }
 
+    @Test
     func testNarrowDisplayAlwaysProducesAtLeastOneColumn() {
         let metrics = LayoutCalculator.metrics(
             preset: .large,
@@ -117,6 +124,7 @@ final class LayoutMetricsTests: XCTestCase {
         )
     }
 
+    @Test
     func testInvalidDisplayGeometryUsesDeterministicFallback() {
         let metrics = LayoutCalculator.metrics(
             preset: .small,
@@ -134,6 +142,7 @@ final class LayoutMetricsTests: XCTestCase {
         XCTAssertTrue(metrics.panelSize.height.isFinite)
     }
 
+    @Test
     func testConstantsMeetAccessibilityAndVisualRequirements() {
         let metrics = LayoutCalculator.metrics(
             preset: .small,

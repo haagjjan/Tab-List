@@ -1,11 +1,13 @@
-import XCTest
+import Testing
 @testable import TabListCore
 
-final class SwitcherSessionReducerTests: XCTestCase {
+@Suite
+struct SwitcherSessionReducerTests {
     private let original = TestFixtures.window(1, focusSequence: 30)
     private let previous = TestFixtures.window(2, focusSequence: 20)
     private let older = TestFixtures.window(3, focusSequence: 10)
 
+    @Test
     func testBeginRequestsFreshSnapshotAndEntersPreparing() {
         var state = SwitcherSessionState()
         let focus = FocusSnapshot(
@@ -23,6 +25,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         )
     }
 
+    @Test
     func testPreparationSelectsFirstAlternativeWhichIsNormallySecondMRU() {
         var state = beginningState()
 
@@ -45,6 +48,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         )
     }
 
+    @Test
     func testPreparationSelectsFirstItemWhenOriginalIsNotEligible() {
         var state = beginningState()
 
@@ -60,6 +64,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         XCTAssertEqual(state.selectedWindow, previous)
     }
 
+    @Test
     func testReverseOpeningSelectsItemBeforeOriginalInWrappedMRUOrder() {
         var state = SwitcherSessionState()
         reduce(
@@ -89,6 +94,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         )
     }
 
+    @Test
     func testReverseOpeningUsesLastItemWhenOriginalIsNotEligible() {
         var state = SwitcherSessionState()
         reduce(
@@ -113,6 +119,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         XCTAssertEqual(state.selectedWindow, older)
     }
 
+    @Test
     func testOpeningDirectionIsRelativeToOriginalWhenItIsNotFirst() {
         let newestOther = TestFixtures.window(9, focusSequence: 40)
         let ordered = [newestOther, original, previous, older]
@@ -145,6 +152,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         XCTAssertEqual(backward.selectedWindow, newestOther)
     }
 
+    @Test
     func testRepeatedCycleInputDuringPreparationIsAppliedOnPresentation() {
         var state = beginningState()
 
@@ -162,6 +170,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         XCTAssertEqual(state.queuedCycleOffset, 0)
     }
 
+    @Test
     func testModifierReleaseDuringPreparationCommitsWithoutFlashingPanel() {
         var state = beginningState()
 
@@ -181,6 +190,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         XCTAssertEqual(effects, [.activate(previous.id)])
     }
 
+    @Test
     func testNoPanelAppearsWhenOnlyOriginalOrNoWindowExists() {
         for items in [[original], []] {
             var state = beginningState()
@@ -195,6 +205,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         }
     }
 
+    @Test
     func testPreparationFailureResetsEveryOpeningField() {
         var state = beginningState()
         reduce(&state, .cycle(.forward))
@@ -215,6 +226,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         XCTAssertEqual(state, SwitcherSessionState())
     }
 
+    @Test
     func testLargeQueuedReverseOffsetWrapsWhenPreparationFinishes() {
         var state = beginningState()
         for _ in 0 ..< 5 {
@@ -233,6 +245,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         XCTAssertEqual(state.queuedCycleOffset, 0)
     }
 
+    @Test
     func testForwardAndBackwardCyclingWrap() {
         var state = visibleState()
 
@@ -253,6 +266,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         XCTAssertEqual(state.selectedWindow, older)
     }
 
+    @Test
     func testModifierReleaseDismissesThenActivatesSelection() {
         var state = visibleState()
 
@@ -271,6 +285,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         XCTAssertEqual(state, SwitcherSessionState())
     }
 
+    @Test
     func testPanelDismissalDuringCommitUpdatesVisibilityWithoutEndingSession() {
         var state = visibleState()
         reduce(&state, .modifierReleased)
@@ -280,6 +295,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         XCTAssertFalse(state.isPanelVisible)
     }
 
+    @Test
     func testMouseClickSelectsAndCommitsImmediately() {
         var state = visibleState()
 
@@ -290,6 +306,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         XCTAssertEqual(effects, [.dismissPanel, .activate(older.id)])
     }
 
+    @Test
     func testInvalidMouseSelectionDoesNotChangeOrCommit() {
         var state = visibleState()
         let selected = state.selectedWindow
@@ -300,6 +317,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         XCTAssertEqual(state.selectedWindow, selected)
     }
 
+    @Test
     func testEscapeDismissesWithoutActivationAndReleaseCannotCommit() {
         var state = visibleState()
 
@@ -310,6 +328,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         XCTAssertEqual(state, SwitcherSessionState())
     }
 
+    @Test
     func testEscapeDuringPreparationReturnsToIdle() {
         var state = beginningState()
 
@@ -317,6 +336,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         XCTAssertEqual(state, SwitcherSessionState())
     }
 
+    @Test
     func testCloseOnUnclosableWindowBeepsWithoutCallingService() {
         let unclosable = TestFixtures.window(
             2,
@@ -329,6 +349,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         XCTAssertNil(state.pendingClose)
     }
 
+    @Test
     func testHoverCloseSelectsAndClosesRequestedNonselectedItem() {
         var state = visibleState()
         XCTAssertEqual(state.selectedWindow, previous)
@@ -343,6 +364,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         )
     }
 
+    @Test
     func testHoverCloseRejectsInvalidIndexAndConcurrentClose() {
         var state = visibleState()
 
@@ -352,6 +374,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         XCTAssertEqual(state.pendingClose, previous.id)
     }
 
+    @Test
     func testSuccessfulCloseKeepsSameIndexAndSelectsNextItem() {
         var state = visibleState()
 
@@ -375,6 +398,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         )
     }
 
+    @Test
     func testClosingLastItemSelectsPreviousItem() {
         var state = visibleState()
         reduce(&state, .cycle(.forward))
@@ -390,6 +414,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         XCTAssertEqual(state.selectedWindow, previous)
     }
 
+    @Test
     func testClosingOnlyItemDismissesPanel() {
         var state = visibleState(
             originalFocus: FocusSnapshot(applicationPID: 999, windowKey: nil),
@@ -407,6 +432,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         XCTAssertEqual(effects, [.reloadPanel, .dismissPanel])
     }
 
+    @Test
     func testMissingCloseTargetIsRemovedAsStale() {
         var state = visibleState()
         reduce(&state, .closeSelected)
@@ -419,6 +445,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         XCTAssertFalse(state.items.contains(previous))
     }
 
+    @Test
     func testCloseConfirmationDismissesAndActivatesOwningWindow() {
         var state = visibleState()
         reduce(&state, .closeSelected)
@@ -438,6 +465,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         )
     }
 
+    @Test
     func testEveryNonterminalCloseFailureBeepsAndLeavesItemAvailable() {
         let failures: [WindowActionResult] = [
             .permissionDenied,
@@ -465,6 +493,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         }
     }
 
+    @Test
     func testRegistryUpdatePreservesSelectedKeyAtItsNewIndex() {
         var state = visibleState()
 
@@ -484,6 +513,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         )
     }
 
+    @Test
     func testRegistryUpdateSelectsSameIndexWhenSelectedWindowDisappears() {
         var state = visibleState()
 
@@ -503,6 +533,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         )
     }
 
+    @Test
     func testRegistryUpdateDropsPendingCloseOnlyWhenTargetDisappears() {
         var retained = visibleState()
         reduce(&retained, .closeSelected)
@@ -526,6 +557,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         XCTAssertNil(removed.pendingClose)
     }
 
+    @Test
     func testCloseCompletionForDifferentWindowIsIgnored() {
         var state = visibleState()
         reduce(&state, .closeSelected)
@@ -540,6 +572,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         XCTAssertEqual(state, before)
     }
 
+    @Test
     func testStaleRegistryUpdateIsIgnored() {
         var state = visibleState(snapshotGeneration: 2)
         let originalItems = state.items
@@ -556,6 +589,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         XCTAssertEqual(state.items, originalItems)
     }
 
+    @Test
     func testEmptyRegistryUpdateFailsClosed() {
         var state = visibleState()
 
@@ -571,6 +605,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         XCTAssertEqual(effects, [.reloadPanel, .dismissPanel])
     }
 
+    @Test
     func testActivationFailureResetsAndBeeps() {
         var state = visibleState()
         reduce(&state, .modifierReleased)
@@ -584,6 +619,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         XCTAssertEqual(effects, [.beep])
     }
 
+    @Test
     func testEveryTypedActivationFailureResetsAndBeeps() {
         let failures: [WindowActionResult] = [
             .targetMissing,
@@ -607,6 +643,7 @@ final class SwitcherSessionReducerTests: XCTestCase {
         }
     }
 
+    @Test
     func testStateInitializerRepairsOutOfRangeSelection() {
         let negative = SwitcherSessionState(
             phase: .visible,

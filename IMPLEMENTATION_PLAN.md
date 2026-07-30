@@ -4,7 +4,7 @@
 > Repository: <https://github.com/haagjjan/Tab-List>
 > Status: decision-complete implementation and release specification
 
-## Implementation Record — July 30, 2026
+## Implementation Record — July 31, 2026
 
 The repository now contains the 1.0 implementation candidate described by this
 document:
@@ -16,19 +16,25 @@ document:
   capability-checked WindowServer integration, three presentation modes,
   in-memory thumbnails, persistent app-icon caching, and redacted diagnostics.
 - A window-fixture application, core/app/UI test targets, original application
-  icon assets, XcodeGen project, legal/privacy documentation, and GitHub Actions
-  automation for CI, signing, notarization, packaging, Sparkle appcasts, and
-  release publication.
+  icon assets, localization catalogs, XcodeGen project, legal/privacy
+  documentation, and GitHub Actions automation for CI, signing, notarization,
+  packaging, Sparkle appcasts, immutable draft candidates, and separately
+  approved release promotion.
 
 Source-level validation on the current Apple Silicon development host passes:
 
-- Swift 6 complete-concurrency compilation with warnings treated as errors.
-- arm64 linking for the core library, application, and fixture sources against
-  the macOS 15 deployment target.
-- Swift Package Manager core build.
+- 144 Swift Testing checks across 25 core and application-logic suites.
+- Swift 6 complete-concurrency Debug and Release application type-checking with
+  warnings treated as errors.
+- arm64 linking for the portable core, application-source, and benchmark
+  targets against the macOS 15 deployment target.
+- Window-fixture source type-checking.
+- Optimized 100-window deterministic core microbenchmarks.
+- A local Carbon smoke test registering and unregistering `Command-Tab`
+  returned `noErr` on the current macOS 26 host.
 - XcodeGen 2.46.0 deterministic project generation.
-- Plist, JSON, YAML, shell syntax, release metadata, asset, and dependency-pin
-  checks.
+- Plist, JSON, YAML, shell syntax, GitHub Actions, release metadata, asset,
+  localization, and dependency-pin checks.
 
 This is not yet a signed 1.0 release. The following acceptance gates require
 external state that is unavailable on the current host and must be completed
@@ -54,8 +60,12 @@ before publishing:
   unverified calling convention.
 - Measure every latency, CPU, and memory budget in an optimized Release build.
 - Configure Developer ID, notarization, and Sparkle EdDSA secrets; run the
-  protected release workflow; and pass Gatekeeper plus update-from-beta tests on
-  a clean Mac.
+  protected draft-candidate and promotion workflows; and pass Gatekeeper plus
+  update-from-beta tests on a clean Mac.
+
+Every external gate has a dedicated owner-facing runbook under
+`docs/human-actions`. Candidate evidence and the no-rebuild publication process
+are specified under `docs/release`.
 
 These are release-validation gates, not permission to weaken the acceptance
 criteria below. A private symbol being present is never sufficient reason to
@@ -389,7 +399,10 @@ Create a standard macOS application with:
 - An XcodeGen `project.yml` as the target/build-setting source of truth, with the generated `.xcodeproj` committed for contributors who do not use XcodeGen.
 - App, unit-test, UI-test, and window-fixture targets.
 
-The initial development machine has Command Line Tools but not the full Xcode application. Full Xcode 26.x must be installed and selected before project generation validation, UI tests, archives, signing, or notarization.
+The initial development machine has Command Line Tools but not the full Xcode
+application. The portable package and generated project can be source-validated
+there, but full Xcode 26.x must be installed and selected before Xcode scheme
+builds, UI tests, archives, signing, or notarization.
 
 ### Component flow
 
@@ -555,6 +568,7 @@ It consumes protocols rather than concrete OS services:
 ```swift
 protocol WindowSnapshotProviding {
     func snapshot(forceRefreshIfStale: Bool) async -> WindowSnapshot
+    func refreshSnapshot() async -> WindowSnapshot
 }
 
 protocol WindowActuating {
@@ -563,12 +577,20 @@ protocol WindowActuating {
 }
 
 protocol ThumbnailProviding {
-    func cachedThumbnail(for key: WindowKey) async -> CGImage?
-    func refresh(_ keys: [WindowKey], priority: [WindowKey]) async
+    func cachedThumbnail(for window: WindowRecord) async -> CGImage?
+    func refresh(
+        _ windows: [WindowRecord],
+        priority: [WindowKey],
+        targetSize: CGSize
+    ) async -> Set<WindowKey>
 }
 
 protocol AppIconProviding {
-    func icon(for bundleID: String?, bundleURL: URL?) async -> NSImage
+    func icon(
+        for bundleID: String?,
+        bundleURL: URL?,
+        targetSize: CGFloat
+    ) async -> NSImage
 }
 ```
 
@@ -887,7 +909,9 @@ Fail the release if:
 - Thumbnail mode uses Screen Recording; icon/title modes rely on application metadata and AX/WindowServer titles.
 - Window screenshots are sensitive and must remain in bounded volatile memory.
 - A paid Apple Developer Program membership and Developer ID Application certificate are required for the final public release.
-- Full Xcode 26.x is a prerequisite; Command Line Tools alone cannot build, UI-test, archive, sign, or notarize this project.
+- Full Xcode 26.x is a release prerequisite. Command Line Tools can compile the
+  portable source/test package, but cannot produce or UI-test the distributable
+  app bundle, archive, sign, or notarize it.
 - The original application icon should depict layered windows and a list using a restrained blue/teal native macOS rounded-square treatment, without copying AltTab branding.
 - The original branded application icon is included as reviewed 16–1024 px PNG renditions generated from a project-owned high-resolution source. Do not replace it with reference artwork.
 - The `project.yml` file remains the source of truth. Release CI regenerates the project before every build.

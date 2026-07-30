@@ -1,4 +1,4 @@
-name: Release
+name: Release Candidate
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ on:
         required: true
         type: string
       prerelease:
-        description: Publish as a GitHub pre-release
+        description: Mark the eventual release as a pre-release
         required: true
         default: true
         type: boolean
@@ -24,12 +24,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: release
+  group: release-candidate-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   compatibility-test:
-    name: Release tests (${{ matrix.os }}, Apple Silicon)
+    name: Candidate tests (${{ matrix.os }}, Apple Silicon)
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -59,20 +59,20 @@ jobs:
       - name: Build and test
         env:
           DERIVED_DATA_PATH: ${{ runner.temp }}/TabListDerivedData
-          RESULT_BUNDLE_PATH: ${{ runner.temp }}/TabListTests.xcresult
+          RESULT_BUNDLE_DIRECTORY: ${{ runner.temp }}/TabListTestResults
         run: Scripts/ci.sh
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
-          name: Release-TabListTests-${{ matrix.os }}
-          path: ${{ runner.temp }}/TabListTests.xcresult
+          name: Release-Candidate-Tests-${{ matrix.os }}
+          path: ${{ runner.temp }}/TabListTestResults
           if-no-files-found: ignore
           retention-days: 30
 
-  release:
-    name: Sign, notarize, and publish
+  candidate:
+    name: Build signed draft candidate
     needs: compatibility-test
     runs-on: macos-26
     timeout-minutes: 60
@@ -99,7 +99,7 @@ jobs:
       - name: Select Xcode 26
         run: Scripts/select_xcode_26.sh
 
-      - name: Resolve release metadata
+      - name: Resolve candidate metadata
         id: release
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -111,15 +111,18 @@ jobs:
           set -euo pipefail
           source Scripts/common.sh
 
+          source_commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
           default_ref="refs/heads/${DEFAULT_BRANCH}"
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             [[ "$GITHUB_REF" == "$default_ref" ]] || {
-              echo "::error::Manual releases must run from ${default_ref}, not ${GITHUB_REF}"
+              echo "::error::Manual candidates must run from ${default_ref}"
               exit 1
             }
           else
-            git merge-base --is-ancestor "$GITHUB_SHA" "origin/${DEFAULT_BRANCH}" || {
-              echo "::error::Release tags must point to a commit reachable from ${DEFAULT_BRANCH}"
+            git merge-base --is-ancestor \
+              "$source_commit" \
+              "origin/${DEFAULT_BRANCH}" || {
+              echo "::error::Candidate tags must be reachable from ${DEFAULT_BRANCH}"
               exit 1
             }
           fi
@@ -140,14 +143,39 @@ jobs:
               prerelease=true
             fi
           fi
+
           validate_version "$version"
           validate_build_number "$build_number"
+          tag="v${version}"
+          if git rev-parse --verify --quiet "refs/tags/${tag}" \
+            >/dev/null
+          then
+            tagged_commit="$(git rev-list -n 1 "$tag")"
+            [[ "$tagged_commit" == "$source_commit" ]] || {
+              echo "::error::Existing tag does not identify the candidate commit"
+              exit 1
+            }
+          fi
           {
             echo "version=$version"
             echo "build_number=$build_number"
             echo "prerelease=$prerelease"
-            echo "tag=v$version"
+            echo "tag=$tag"
+            echo "source_commit=$source_commit"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Require a new candidate tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            >/dev/null 2>&1
+          then
+            echo "::error::A release or draft already exists for ${TAG}"
+            exit 1
+          fi
 
       - name: Enforce monotonically increasing Sparkle build
         env:
@@ -157,18 +185,21 @@ jobs:
           set -euo pipefail
           releases="$RUNNER_TEMP/releases.json"
           previous_appcast="$RUNNER_TEMP/previous-appcast.xml"
-          gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$releases"
+          gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            > "$releases"
           asset_id="$(
             jq -r \
-              '[.[] | select(.draft == false) | .assets[] | select(.name == "appcast.xml")][0].id // empty' \
+              '[.[] | select(.draft == false) | .assets[] |
+                select(.name == "appcast.xml")][0].id // empty' \
               "$releases"
           )"
           if [[ -z "$asset_id" ]]; then
-            echo "No previous published appcast found; treating this as the first release."
+            echo "No published appcast exists; treating this as release one."
           else
             gh api \
               --header "Accept: application/octet-stream" \
-              "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" > "$previous_appcast"
+              "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
+              > "$previous_appcast"
             Scripts/check_release_monotonic.sh \
               "$NEW_BUILD_NUMBER" \
               "$previous_appcast"
@@ -197,6 +228,10 @@ jobs:
               exit 1
             }
           done
+          [[ "$IDENTITY" == "Developer ID Application:"* ]] || {
+            echo "::error::APPLE_CODESIGN_IDENTITY must be the full Developer ID Application common name"
+            exit 1
+          }
 
       - name: Import Developer ID certificate
         env:
@@ -211,8 +246,17 @@ jobs:
           security create-keychain -p "$password" "$keychain"
           security set-keychain-settings -lut 21600 "$keychain"
           security unlock-keychain -p "$password" "$keychain"
-          security import "$certificate" -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
-          security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain"
+          security import \
+            "$certificate" \
+            -P "$CERTIFICATE_PASSWORD" \
+            -A \
+            -t cert \
+            -f pkcs12 \
+            -k "$keychain"
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -k "$password" \
+            "$keychain"
           security list-keychains -d user -s "$keychain"
           rm -f "$certificate"
 
@@ -223,19 +267,28 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
-          printf '%s' "$NOTARY_KEY" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
-          printf '%s' "$SPARKLE_PRIVATE_KEY" | base64 --decode > "$RUNNER_TEMP/sparkle-private-key"
+          printf '%s' "$NOTARY_KEY" |
+            base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          printf '%s' "$SPARKLE_PRIVATE_KEY" |
+            base64 --decode > "$RUNNER_TEMP/sparkle-private-key"
 
       - name: Validate generated artifacts
         run: |
           set -euo pipefail
+          plutil -lint \
+            Config/*.plist \
+            Config/*.entitlements \
+            Resources/TabList/en.lproj/InfoPlist.strings
+          jq empty Resources/TabList/Localizable.xcstrings
           xcodegen generate --spec project.yml
           Scripts/generate_app_icons.swift \
             Resources/Artwork/TabList-AppIcon-Source.png \
             Resources/TabList/Assets.xcassets/AppIcon.appiconset
-          git diff --exit-code -- TabList.xcodeproj Resources/TabList/Assets.xcassets/AppIcon.appiconset
+          git diff --exit-code -- \
+            TabList.xcodeproj \
+            Resources/TabList/Assets.xcassets/AppIcon.appiconset
 
-      - name: Archive signed application
+      - name: Archive and export signed application
         env:
           DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
           CODE_SIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
@@ -243,6 +296,8 @@ jobs:
           BUILD_NUMBER: ${{ steps.release.outputs.build_number }}
           SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
           ARCHIVE_PATH: ${{ runner.temp }}/TabList.xcarchive
+          EXPORT_PATH: ${{ runner.temp }}/TabListExport
+          EXPORT_OPTIONS_EVIDENCE_PATH: ${{ runner.temp }}/release-evidence/export-options.plist
           DERIVED_DATA_PATH: ${{ runner.temp }}/TabListDerivedData
         run: Scripts/archive.sh
 
@@ -251,7 +306,8 @@ jobs:
           NOTARY_KEY_PATH: ${{ runner.temp }}/AuthKey.p8
           NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
-        run: Scripts/notarize.sh "$RUNNER_TEMP/TabList.xcarchive/Products/Applications/TabList.app"
+          NOTARIZATION_EVIDENCE_DIR: ${{ runner.temp }}/release-evidence/notarization/app
+        run: Scripts/notarize.sh "$RUNNER_TEMP/TabListExport/TabList.app"
 
       - name: Package release artifacts
         env:
@@ -260,56 +316,162 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/artifacts" "$RUNNER_TEMP/updates"
           Scripts/package_release.sh \
-            "$RUNNER_TEMP/TabList.xcarchive/Products/Applications/TabList.app" \
+            "$RUNNER_TEMP/TabListExport/TabList.app" \
             "${{ steps.release.outputs.version }}" \
             "$RUNNER_TEMP/artifacts"
-          cp "$RUNNER_TEMP/artifacts/TabList-${{ steps.release.outputs.version }}.zip" "$RUNNER_TEMP/updates/"
+          cp \
+            "$RUNNER_TEMP/artifacts/TabList-${{ steps.release.outputs.version }}.zip" \
+            "$RUNNER_TEMP/updates/"
 
       - name: Notarize and staple disk image
         env:
           NOTARY_KEY_PATH: ${{ runner.temp }}/AuthKey.p8
           NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
-        run: Scripts/notarize.sh "$RUNNER_TEMP/artifacts/TabList-${{ steps.release.outputs.version }}.dmg"
+          NOTARIZATION_EVIDENCE_DIR: ${{ runner.temp }}/release-evidence/notarization/dmg
+          VERSION: ${{ steps.release.outputs.version }}
+        run: >-
+          Scripts/notarize.sh
+          "$RUNNER_TEMP/artifacts/TabList-${VERSION}.dmg"
 
       - name: Generate signed Sparkle appcast
         env:
           DERIVED_DATA_PATH: ${{ runner.temp }}/TabListDerivedData
           SPARKLE_PRIVATE_ED_KEY_FILE: ${{ runner.temp }}/sparkle-private-key
-          DOWNLOAD_URL_PREFIX: https://github.com/haagjjan/Tab-List/releases/download/${{ steps.release.outputs.tag }}/
+          DOWNLOAD_URL_PREFIX: https://github.com/${{ github.repository }}/releases/download/${{ steps.release.outputs.tag }}/
         run: |
           set -euo pipefail
           Scripts/generate_appcast.sh "$RUNNER_TEMP/updates"
-          cp "$RUNNER_TEMP/updates/appcast.xml" "$RUNNER_TEMP/artifacts/appcast.xml"
+          cp \
+            "$RUNNER_TEMP/updates/appcast.xml" \
+            "$RUNNER_TEMP/artifacts/appcast.xml"
 
-      - name: Verify signed update and release metadata
+      - name: Verify signed candidate
         env:
           DERIVED_DATA_PATH: ${{ runner.temp }}/TabListDerivedData
           EXPECTED_MARKETING_VERSION: ${{ steps.release.outputs.version }}
           EXPECTED_BUILD_NUMBER: ${{ steps.release.outputs.build_number }}
-          EXPECTED_DOWNLOAD_URL: https://github.com/haagjjan/Tab-List/releases/download/${{ steps.release.outputs.tag }}/TabList-${{ steps.release.outputs.version }}.zip
+          EXPECTED_DOWNLOAD_URL: https://github.com/${{ github.repository }}/releases/download/${{ steps.release.outputs.tag }}/TabList-${{ steps.release.outputs.version }}.zip
+          EXPECTED_BUNDLE_IDENTIFIER: com.haagjjan.TabList
+          EXPECTED_DEVELOPMENT_TEAM: ${{ secrets.APPLE_DEVELOPMENT_TEAM }}
+          EXPECTED_CODE_SIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
+          EXPECTED_FEED_URL: https://github.com/haagjjan/Tab-List/releases/latest/download/appcast.xml
+          EXPECTED_SOURCE_COMMIT: ${{ steps.release.outputs.source_commit }}
+          EXPECTED_TAG: ${{ steps.release.outputs.tag }}
+          EXPECTED_PRERELEASE: ${{ steps.release.outputs.prerelease }}
           SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
           SPARKLE_PRIVATE_ED_KEY_FILE: ${{ runner.temp }}/sparkle-private-key
         run: |
+          set -euo pipefail
           Scripts/verify_release.sh \
-            "$RUNNER_TEMP/TabList.xcarchive/Products/Applications/TabList.app" \
+            "$RUNNER_TEMP/TabListExport/TabList.app" \
             "$RUNNER_TEMP/artifacts/TabList-${{ steps.release.outputs.version }}.zip" \
-            "$RUNNER_TEMP/artifacts/appcast.xml"
+            "$RUNNER_TEMP/artifacts/TabList-${{ steps.release.outputs.version }}.dmg" \
+            "$RUNNER_TEMP/artifacts/appcast.xml" \
+            "$RUNNER_TEMP/release-evidence/verification"
 
-      - name: Publish GitHub Release
+      - name: Assemble candidate manifest and evidence
         env:
-          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+          BUILD_NUMBER: ${{ steps.release.outputs.build_number }}
+          TAG: ${{ steps.release.outputs.tag }}
+          SOURCE_COMMIT: ${{ steps.release.outputs.source_commit }}
+          PRERELEASE: ${{ steps.release.outputs.prerelease }}
         run: |
           set -euo pipefail
-          flags=(--generate-notes --title "Tab-List ${{ steps.release.outputs.version }}")
-          if [[ "${{ steps.release.outputs.prerelease }}" == "true" ]]; then
+          evidence="$RUNNER_TEMP/release-evidence"
+          artifacts="$RUNNER_TEMP/artifacts"
+          jq -n \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg workflow "$GITHUB_WORKFLOW" \
+            --arg runID "$GITHUB_RUN_ID" \
+            --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
+            --arg version "$VERSION" \
+            --arg buildNumber "$BUILD_NUMBER" \
+            --arg tag "$TAG" \
+            --arg sourceCommit "$SOURCE_COMMIT" \
+            --argjson prerelease "$PRERELEASE" \
+            --arg createdAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{
+              schemaVersion: 1,
+              repository: $repository,
+              workflow: $workflow,
+              runID: $runID,
+              runAttempt: $runAttempt,
+              version: $version,
+              buildNumber: $buildNumber,
+              tag: $tag,
+              sourceCommit: $sourceCommit,
+              prerelease: $prerelease,
+              createdAt: $createdAt
+            }' > "$evidence/workflow-metadata.json"
+
+          cp \
+            "$evidence/verification/release-manifest.json" \
+            "$artifacts/release-manifest.json"
+          cp \
+            "$evidence/verification/SHA256SUMS" \
+            "$artifacts/SHA256SUMS"
+          ditto -c -k --sequesterRsrc \
+            "$evidence" \
+            "$artifacts/release-evidence.zip"
+          evidence_sha="$(
+            shasum -a 256 "$artifacts/release-evidence.zip" |
+              awk '{print $1}'
+          )"
+          printf '%s  %s\n' \
+            "$evidence_sha" \
+            "release-evidence.zip" \
+            >> "$artifacts/SHA256SUMS"
+          (
+            cd "$artifacts"
+            shasum -a 256 -c SHA256SUMS
+          )
+          immutable="$RUNNER_TEMP/candidate-workflow-evidence"
+          mkdir -p "$immutable"
+          cp \
+            "$artifacts/release-manifest.json" \
+            "$artifacts/SHA256SUMS" \
+            "$artifacts/release-evidence.zip" \
+            "$immutable/"
+
+      - name: Create draft candidate release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+          PRERELEASE: ${{ steps.release.outputs.prerelease }}
+          SOURCE_COMMIT: ${{ steps.release.outputs.source_commit }}
+        run: |
+          set -euo pipefail
+          flags=(
+            --draft
+            --generate-notes
+            --title "Tab-List ${VERSION} candidate"
+            --target "$SOURCE_COMMIT"
+          )
+          if [[ "$PRERELEASE" == "true" ]]; then
             flags+=(--prerelease)
           fi
           gh release create \
-            "${{ steps.release.outputs.tag }}" \
+            "$TAG" \
             "$RUNNER_TEMP/artifacts/"* \
-            --target "$GITHUB_SHA" \
+            --repo "$GITHUB_REPOSITORY" \
             "${flags[@]}"
+          gh release view \
+            "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json assets,isDraft,isPrerelease,tagName,targetCommitish,url \
+            > "$RUNNER_TEMP/release-evidence/draft-release.json"
+
+      - name: Upload release evidence
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: Release-Candidate-Evidence-${{ steps.release.outputs.tag }}
+          path: ${{ runner.temp }}/candidate-workflow-evidence
+          if-no-files-found: warn
+          retention-days: 90
 
       - name: Remove private keys
         if: always()
@@ -318,4 +480,6 @@ jobs:
             "$RUNNER_TEMP/AuthKey.p8" \
             "$RUNNER_TEMP/sparkle-private-key" \
             "$RUNNER_TEMP/developer-id.p12"
-          security delete-keychain "$RUNNER_TEMP/tablist-signing.keychain-db" 2>/dev/null || true
+          security delete-keychain \
+            "$RUNNER_TEMP/tablist-signing.keychain-db" \
+            2>/dev/null || true

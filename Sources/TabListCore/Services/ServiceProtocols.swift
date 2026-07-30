@@ -16,6 +16,7 @@ public enum WindowActionResult: Equatable, Sendable {
 
 public protocol WindowSnapshotProviding: Sendable {
     func snapshot(forceRefreshIfStale: Bool) async -> WindowSnapshot
+    func refreshSnapshot() async -> WindowSnapshot
 }
 
 public protocol WindowFocusHistoryProviding: Sendable {

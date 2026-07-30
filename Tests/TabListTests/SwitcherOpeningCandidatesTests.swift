@@ -1,8 +1,10 @@
 import TabListCore
-import XCTest
+import Testing
 @testable import TabList
 
-final class SwitcherOpeningCandidatesTests: XCTestCase {
+@Suite
+struct SwitcherOpeningCandidatesTests {
+    @Test
     func testMissingCachedSnapshotProducesNoOpeningBatch() {
         XCTAssertNil(
             SwitcherOpeningCandidates.cached(
@@ -13,6 +15,25 @@ final class SwitcherOpeningCandidatesTests: XCTestCase {
         )
     }
 
+    @Test
+    func testInvalidCachedSnapshotProducesNoOpeningBatch() {
+        let duplicate = AppTestFixtures.window(1)
+        let invalid = WindowSnapshot(
+            generation: 1,
+            windows: [duplicate, duplicate],
+            visibleSpaceIDs: [1]
+        )
+
+        XCTAssertNil(
+            SwitcherOpeningCandidates.cached(
+                from: invalid,
+                settings: .default,
+                pointerDisplayID: 10
+            )
+        )
+    }
+
+    @Test
     func testCachedSnapshotImmediatelyProducesFilteredWindowMRUCandidates() {
         var settings = SettingsV1.default
         settings.screenScope = .pointerScreen
@@ -54,6 +75,7 @@ final class SwitcherOpeningCandidatesTests: XCTestCase {
         XCTAssertEqual(opening?.orderedItems, [current, previous])
     }
 
+    @Test
     func testOpeningBatchDoesNotCollapseSameApplicationWindows() {
         let first = AppTestFixtures.window(
             1,
@@ -84,6 +106,7 @@ final class SwitcherOpeningCandidatesTests: XCTestCase {
         XCTAssertEqual(opening.orderedItems, [second, first])
     }
 
+    @Test
     func testOpeningPromotesConfirmedCurrentWindowAheadOfStaleMRU() {
         let staleNewest = AppTestFixtures.window(
             1,
@@ -117,5 +140,32 @@ final class SwitcherOpeningCandidatesTests: XCTestCase {
             opening.orderedItems,
             [current, staleNewest, older]
         )
+    }
+
+    @Test
+    func testCachedBatchWithoutAlternativeRequiresFreshReconciliation() {
+        let current = AppTestFixtures.window(
+            1,
+            title: "Current",
+            focusSequence: 10
+        )
+        let stale = SwitcherOpeningCandidates(
+            snapshotGeneration: 1,
+            orderedItems: [current]
+        )
+        let refreshed = SwitcherOpeningCandidates(
+            snapshotGeneration: 2,
+            orderedItems: [
+                current,
+                AppTestFixtures.window(
+                    2,
+                    title: "Just created",
+                    focusSequence: 20
+                ),
+            ]
+        )
+
+        XCTAssertFalse(stale.containsAlternative(to: current.id))
+        XCTAssertTrue(refreshed.containsAlternative(to: current.id))
     }
 }

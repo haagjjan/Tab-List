@@ -1,11 +1,14 @@
-import XCTest
+import Testing
 @testable import TabListCore
 
-final class ShortcutTests: XCTestCase {
+@Suite
+struct ShortcutTests {
+    @Test
     func testCommandTabIsValid() {
         XCTAssertEqual(ShortcutValidator.validate(.commandTab), .valid)
     }
 
+    @Test
     func testModifierOnlyShortcutIsRejected() {
         let shortcut = ShortcutDefinition(keyCode: nil, modifiers: .command)
 
@@ -15,6 +18,7 @@ final class ShortcutTests: XCTestCase {
         )
     }
 
+    @Test
     func testShortcutWithoutModifierIsRejected() {
         let shortcut = ShortcutDefinition(keyCode: 48, modifiers: [])
 
@@ -24,6 +28,7 @@ final class ShortcutTests: XCTestCase {
         )
     }
 
+    @Test
     func testSwitcherActionKeysAreRejectedAsTriggers() {
         for keyCode: UInt16 in [53, 51, 117] {
             let shortcut = ShortcutDefinition(
@@ -38,6 +43,7 @@ final class ShortcutTests: XCTestCase {
         }
     }
 
+    @Test
     func testShiftOnlyShortcutIsRejectedBecauseShiftReversesCycling() {
         let shortcut = ShortcutDefinition(keyCode: 48, modifiers: .shift)
 
@@ -47,6 +53,7 @@ final class ShortcutTests: XCTestCase {
         )
     }
 
+    @Test
     func testShiftCanAccompanyABaseModifier() {
         let shortcut = ShortcutDefinition(
             keyCode: 48,
@@ -56,6 +63,7 @@ final class ShortcutTests: XCTestCase {
         XCTAssertEqual(ShortcutValidator.validate(shortcut), .valid)
     }
 
+    @Test
     func testUnknownModifierBitsAreRejected() {
         let shortcut = ShortcutDefinition(
             keyCode: 48,
@@ -68,6 +76,7 @@ final class ShortcutTests: XCTestCase {
         )
     }
 
+    @Test
     func testKnownAndRuntimeRegistrationConflictsAreRejected() {
         XCTAssertEqual(
             ShortcutValidator.validate(
@@ -85,6 +94,7 @@ final class ShortcutTests: XCTestCase {
         )
     }
 
+    @Test
     func testKnownConflictsCompareRegistrationIdentityWithoutShift() {
         let commandShiftTab = ShortcutDefinition(
             keyCode: 48,

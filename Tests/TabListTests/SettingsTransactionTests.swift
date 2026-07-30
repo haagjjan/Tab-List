@@ -1,8 +1,10 @@
 import TabListCore
-import XCTest
+import Testing
 @testable import TabList
 
-final class SettingsTransactionTests: XCTestCase {
+@Suite
+struct SettingsTransactionTests {
+    @Test
     func testFailedShortcutReplacementKeepsPreviousShortcutOnly() {
         var previous = SettingsV1.default
         previous.shortcut = ShortcutDefinition(
@@ -25,6 +27,7 @@ final class SettingsTransactionTests: XCTestCase {
         XCTAssertEqual(committed.presentation, requested.presentation)
     }
 
+    @Test
     func testSuccessfulShortcutReplacementCommitsRequestedSettings() {
         var requested = SettingsV1.default
         requested.shortcut = ShortcutDefinition(
@@ -43,6 +46,7 @@ final class SettingsTransactionTests: XCTestCase {
         )
     }
 
+    @Test
     func testUnchangedShortcutDoesNotDependOnRegistrationResult() {
         var requested = SettingsV1.default
         requested.opacity = 0.93
