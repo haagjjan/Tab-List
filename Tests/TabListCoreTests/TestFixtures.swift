@@ -21,6 +21,7 @@ enum TestFixtures {
         isFullscreen: Bool = false,
         isStandardWindow: Bool = true,
         isClosable: Bool = true,
+        isActionable: Bool = true,
         focusSequence: UInt64 = 0
     ) -> WindowRecord {
         WindowRecord(
@@ -37,6 +38,7 @@ enum TestFixtures {
             isFullscreen: isFullscreen,
             isStandardWindow: isStandardWindow,
             isClosable: isClosable,
+            isActionable: isActionable,
             lastFocusSequence: focusSequence
         )
     }
@@ -49,6 +51,7 @@ enum TestFixtures {
         WindowClassificationInput(
             ownerBundleIdentifier: "com.example.App",
             ownerName: titleIndependentOwnerName,
+            ownerActivationPolicy: .regular,
             bounds: CGRect(x: 0, y: 0, width: 500, height: 400),
             layer: 0,
             alpha: 1,

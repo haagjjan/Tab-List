@@ -32,4 +32,18 @@ struct SettingsViewModelTests {
         XCTAssertTrue(model.accessibilityGranted)
         XCTAssertTrue(model.screenRecordingGranted)
     }
+
+    @Test
+    @MainActor
+    func testReverseControlRejectsReservedKeysAndAcceptsARegularKey() {
+        let model = SettingsViewModel(settings: .default)
+
+        model.updateReverseControl(.key(48))
+        XCTAssertEqual(model.settings.reverseControl, .shiftWithForwardKey)
+        XCTAssertTrue(model.reverseControlValidationMessage != nil)
+
+        model.updateReverseControl(.key(15))
+        XCTAssertEqual(model.settings.reverseControl, .key(15))
+        XCTAssertNil(model.reverseControlValidationMessage)
+    }
 }

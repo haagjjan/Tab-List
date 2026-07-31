@@ -12,6 +12,9 @@ public struct AccessibilityWindowMetadata: Equatable, Sendable {
     public let isFullscreen: Bool
     public let isStandardWindow: Bool
     public let isClosable: Bool
+    public let isMain: Bool
+    public let nativeTabGroupID: UInt64?
+    public let nativeTabCount: Int
 
     public init(
         role: String?,
@@ -21,7 +24,10 @@ public struct AccessibilityWindowMetadata: Equatable, Sendable {
         isMinimized: Bool,
         isFullscreen: Bool,
         isStandardWindow: Bool,
-        isClosable: Bool
+        isClosable: Bool,
+        isMain: Bool = false,
+        nativeTabGroupID: UInt64? = nil,
+        nativeTabCount: Int = 0
     ) {
         self.role = role
         self.subrole = subrole
@@ -31,16 +37,61 @@ public struct AccessibilityWindowMetadata: Equatable, Sendable {
         self.isFullscreen = isFullscreen
         self.isStandardWindow = isStandardWindow
         self.isClosable = isClosable
+        self.isMain = isMain
+        self.nativeTabGroupID = nativeTabGroupID
+        self.nativeTabCount = nativeTabCount
     }
+}
+
+/// One Accessibility enumeration pass for the candidate applications. A PID in
+/// `inspectedPIDs` returned its AX window list successfully, so WindowServer
+/// surfaces not present in `metadata` are backing/helper surfaces rather than
+/// independent selectable windows.
+public struct AccessibilityWindowInventory: Sendable {
+    public let metadata: [WindowKey: AccessibilityWindowMetadata]
+    public let identitySources: [WindowKey: WindowIdentitySource]
+    public let inspectedPIDs: Set<pid_t>
+    public let unresolvedStandardWindowCounts: [pid_t: Int]
+    public let isTrusted: Bool
+
+    public init(
+        metadata: [WindowKey: AccessibilityWindowMetadata],
+        identitySources: [WindowKey: WindowIdentitySource],
+        inspectedPIDs: Set<pid_t>,
+        unresolvedStandardWindowCounts: [pid_t: Int],
+        isTrusted: Bool
+    ) {
+        self.metadata = metadata
+        self.identitySources = identitySources
+        self.inspectedPIDs = inspectedPIDs
+        self.unresolvedStandardWindowCounts = unresolvedStandardWindowCounts
+        self.isTrusted = isTrusted
+    }
+}
+
+private struct ProcessAccessibilityWindowInventory: Sendable {
+    let metadata: [WindowKey: AccessibilityWindowMetadata]
+    let identitySources: [WindowKey: WindowIdentitySource]
+    let wasInspected: Bool
+    let unresolvedStandardWindowCount: Int
 }
 
 struct AccessibilityWindowMatchDescriptor: Equatable, Sendable {
     let title: String?
     let bounds: CGRect?
+    let isPreferred: Bool
+    let nativeTabCount: Int
 
-    init(title: String?, bounds: CGRect?) {
+    init(
+        title: String?,
+        bounds: CGRect?,
+        isPreferred: Bool = false,
+        nativeTabCount: Int = 0
+    ) {
         self.title = title
         self.bounds = bounds
+        self.isPreferred = isPreferred
+        self.nativeTabCount = nativeTabCount
     }
 }
 
@@ -58,6 +109,75 @@ enum AccessibilityGeometryMatcher {
 
     private static let maximumGeometryDistance: CGFloat = 12
     private static let ambiguityTolerance: CGFloat = 0.5
+
+    /// Produces a one-to-one mapping from WindowServer candidate indices to
+    /// Accessibility window indices.
+    ///
+    /// Strong reciprocal title/geometry matches are assigned first. If several
+    /// otherwise identical candidates remain, they stay unresolved: ordering
+    /// alone is not identity evidence and could make a selectable item act on
+    /// the wrong window. The sole grouped exception is a single AX container
+    /// that explicitly reports the matching number of native tabs; that maps
+    /// to the frontmost WindowServer surface so the group appears once.
+    static func assignments(
+        candidates: [AccessibilityWindowMatchDescriptor],
+        windows: [AccessibilityWindowMatchDescriptor]
+    ) -> [Int: Int] {
+        var result: [Int: Int] = [:]
+        var usedWindows: Set<Int> = []
+
+        for candidateIndex in candidates.indices {
+            guard let windowIndex = uniqueMatchIndex(
+                target: candidates[candidateIndex],
+                candidates: windows
+            ),
+            uniqueMatchIndex(
+                target: windows[windowIndex],
+                candidates: candidates
+            ) == candidateIndex,
+            usedWindows.insert(windowIndex).inserted
+            else {
+                continue
+            }
+            result[candidateIndex] = windowIndex
+        }
+
+        let remainingCandidates = candidates.indices.filter {
+            result[$0] == nil && candidates[$0].bounds != nil
+        }
+        let remainingWindows = windows.indices.filter {
+            !usedWindows.contains($0) && windows[$0].bounds != nil
+        }
+        let candidateGroups = Dictionary(
+            grouping: remainingCandidates,
+            by: { geometrySignature(candidates[$0].bounds) }
+        )
+        let windowGroups = Dictionary(
+            grouping: remainingWindows,
+            by: { geometrySignature(windows[$0].bounds) }
+        )
+
+        for (signature, candidateIndices) in candidateGroups {
+            guard let signature,
+                  let windowIndices = windowGroups[signature] else {
+                continue
+            }
+
+            if windowIndices.count == 1,
+               let windowIndex = windowIndices.first,
+               windows[windowIndex].nativeTabCount
+                == candidateIndices.count,
+               candidateIndices.count > 1 {
+                result[candidateIndices[0]] = windowIndex
+                continue
+            }
+            // Multiple AX windows and multiple compositor surfaces with the
+            // same title/geometry cannot be paired safely without exact IDs.
+            // Fail closed until the private AX window-ID capability has been
+            // validated for this macOS build.
+        }
+        return result
+    }
 
     static func uniqueMatchIndex(
         target: AccessibilityWindowMatchDescriptor,
@@ -133,6 +253,18 @@ enum AccessibilityGeometryMatcher {
             + abs(lhs.width - rhs.width)
             + abs(lhs.height - rhs.height)
     }
+
+    private static func geometrySignature(
+        _ bounds: CGRect?
+    ) -> [Int]? {
+        guard let bounds else { return nil }
+        return [
+            Int(bounds.origin.x.rounded()),
+            Int(bounds.origin.y.rounded()),
+            Int(bounds.width.rounded()),
+            Int(bounds.height.rounded()),
+        ]
+    }
 }
 
 public enum AccessibilityOperationResult: Sendable {
@@ -207,27 +339,57 @@ public final class AccessibilityBridge: @unchecked Sendable {
     /// where the dynamically resolved AX-to-window-ID capability is unavailable
     /// simply return fewer records and continue through the public inventory
     /// fallback.
-    public func discoveredWindows(
+    public func windowInventory(
         for processIDs: Set<pid_t>
-    ) async -> [WindowKey: AccessibilityWindowMetadata] {
-        guard AXIsProcessTrusted() else { return [:] }
+    ) async -> AccessibilityWindowInventory {
+        guard AXIsProcessTrusted() else {
+            return AccessibilityWindowInventory(
+                metadata: [:],
+                identitySources: [:],
+                inspectedPIDs: [],
+                unresolvedStandardWindowCounts: [:],
+                isTrusted: false
+            )
+        }
 
         return await withTaskGroup(
-            of: [WindowKey: AccessibilityWindowMetadata].self,
-            returning: [WindowKey: AccessibilityWindowMetadata].self
+            of: (pid_t, ProcessAccessibilityWindowInventory).self,
+            returning: AccessibilityWindowInventory.self
         ) { group in
             for pid in processIDs where pid > 0 {
                 group.addTask { [self] in
-                    await discoveredWindows(for: pid)
+                    (pid, await discoveredWindows(for: pid))
                 }
             }
 
             var result: [WindowKey: AccessibilityWindowMetadata] = [:]
-            for await processResult in group {
-                result.merge(processResult) { _, new in new }
+            var sources: [WindowKey: WindowIdentitySource] = [:]
+            var inspectedPIDs: Set<pid_t> = []
+            var unresolved: [pid_t: Int] = [:]
+            for await (pid, processResult) in group {
+                result.merge(processResult.metadata) { _, new in new }
+                sources.merge(processResult.identitySources) { _, new in new }
+                if processResult.wasInspected {
+                    inspectedPIDs.insert(pid)
+                }
+                if processResult.unresolvedStandardWindowCount > 0 {
+                    unresolved[pid] = processResult.unresolvedStandardWindowCount
+                }
             }
-            return result
+            return AccessibilityWindowInventory(
+                metadata: result,
+                identitySources: sources,
+                inspectedPIDs: inspectedPIDs,
+                unresolvedStandardWindowCounts: unresolved,
+                isTrusted: true
+            )
         }
+    }
+
+    public func discoveredWindows(
+        for processIDs: Set<pid_t>
+    ) async -> [WindowKey: AccessibilityWindowMetadata] {
+        await windowInventory(for: processIDs).metadata
     }
 
     public func focusedWindowKey(for pid: pid_t) async -> WindowKey? {
@@ -282,6 +444,21 @@ public final class AccessibilityBridge: @unchecked Sendable {
                 application,
                 kAXFrontmostAttribute as CFString,
                 kCFBooleanTrue
+            )
+            _ = AXUIElementSetAttributeValue(
+                window,
+                kAXMainAttribute as CFString,
+                kCFBooleanTrue
+            )
+            _ = AXUIElementSetAttributeValue(
+                window,
+                kAXFocusedAttribute as CFString,
+                kCFBooleanTrue
+            )
+            _ = AXUIElementSetAttributeValue(
+                application,
+                kAXFocusedWindowAttribute as CFString,
+                window
             )
 
             let raiseResult = AXUIElementPerformAction(
@@ -398,13 +575,22 @@ public final class AccessibilityBridge: @unchecked Sendable {
 
     private func discoveredWindows(
         for pid: pid_t
-    ) async -> [WindowKey: AccessibilityWindowMetadata] {
+    ) async -> ProcessAccessibilityWindowInventory {
         await perform(on: pid) { [self] in
             let application = configuredApplication(pid: pid)
-            let windows = copyElements(
+            let windowResult = copyElementsWithStatus(
                 application,
                 attribute: kAXWindowsAttribute as CFString
             )
+            guard windowResult.error == .success else {
+                return ProcessAccessibilityWindowInventory(
+                    metadata: [:],
+                    identitySources: [:],
+                    wasInspected: false,
+                    unresolvedStandardWindowCount: 0
+                )
+            }
+            let windows = windowResult.elements
             let publicCandidates = publicWindowCandidates(pid: pid)
             let privateIDs = uniquePrivateWindowIDs(for: windows)
             let privatelyMappedElements = Array(privateIDs.values)
@@ -422,22 +608,40 @@ public final class AccessibilityBridge: @unchecked Sendable {
             )
 
             var result: [WindowKey: AccessibilityWindowMetadata] = [:]
+            var sources: [WindowKey: WindowIdentitySource] = [:]
             result.reserveCapacity(windows.count)
+            var standardWindowCount = 0
             for window in windows {
-                guard let identifier = privateIDs.first(where: {
+                let metadata = readMetadata(from: window)
+                guard metadata.isStandardWindow else { continue }
+                standardWindowCount += 1
+
+                let exactIdentifier = privateIDs.first(where: {
                     CFEqual($0.value, window)
                 })?.key
-                        ?? fallbackMatches.first(where: {
-                            CFEqual($0.value, window)
-                        })?.key.windowID,
+                let fallbackIdentifier = fallbackMatches.first(where: {
+                    CFEqual($0.value, window)
+                })?.key.windowID
+                guard let identifier = exactIdentifier ?? fallbackIdentifier,
                       identifier != 0 else {
                     continue
                 }
                 let key = WindowKey(pid: pid, windowID: identifier)
                 cache(window, for: key)
-                result[key] = readMetadata(from: window)
+                result[key] = metadata
+                sources[key] = exactIdentifier == nil
+                    ? .uniqueGeometry
+                    : .exactAccessibilityID
             }
-            return result
+            return ProcessAccessibilityWindowInventory(
+                metadata: result,
+                identitySources: sources,
+                wasInspected: true,
+                unresolvedStandardWindowCount: max(
+                    0,
+                    standardWindowCount - result.count
+                )
+            )
         }
     }
 
@@ -449,7 +653,29 @@ public final class AccessibilityBridge: @unchecked Sendable {
             element,
             attribute: kAXSubroleAttribute as CFString
         )
-        let title = copyString(element, attribute: kAXTitleAttribute as CFString)
+        let tabs = copyElements(
+            element,
+            attribute: kAXTabsAttribute as CFString
+        )
+        let selectedTab = tabs.first {
+            copyBool($0, attribute: kAXSelectedAttribute as CFString) == true
+        }
+        let titleElement = copyElement(
+            element,
+            attribute: kAXTitleUIElementAttribute as CFString
+        )
+        let title = firstNonblankString([
+            copyString(element, attribute: kAXTitleAttribute as CFString),
+            selectedTab.flatMap {
+                copyString($0, attribute: kAXTitleAttribute as CFString)
+            },
+            titleElement.flatMap {
+                copyString($0, attribute: kAXValueAttribute as CFString)
+            },
+            titleElement.flatMap {
+                copyString($0, attribute: kAXTitleAttribute as CFString)
+            },
+        ])
         let position = copyPoint(
             element,
             attribute: kAXPositionAttribute as CFString
@@ -466,6 +692,13 @@ public final class AccessibilityBridge: @unchecked Sendable {
             element,
             attribute: "AXFullScreen" as CFString
         ) ?? false
+        let isMain =
+            copyBool(element, attribute: kAXMainAttribute as CFString)
+                ?? copyBool(
+                    element,
+                    attribute: kAXFocusedAttribute as CFString
+                )
+                ?? false
         let closeButton = copyElement(
             element,
             attribute: kAXCloseButtonAttribute as CFString
@@ -489,8 +722,27 @@ public final class AccessibilityBridge: @unchecked Sendable {
             isMinimized: isMinimized,
             isFullscreen: isFullscreen,
             isStandardWindow: isStandard,
-            isClosable: closeButton != nil && closeButtonIsEnabled != false
+            isClosable: closeButton != nil && closeButtonIsEnabled != false,
+            isMain: isMain,
+            nativeTabGroupID: nativeTabGroupID(for: tabs),
+            nativeTabCount: tabs.count
         )
+    }
+
+    private func nativeTabGroupID(
+        for tabs: [AXUIElement]
+    ) -> UInt64? {
+        guard tabs.count > 1 else { return nil }
+        let elementHashes = tabs.map {
+            UInt64(truncatingIfNeeded: CFHash($0))
+        }.sorted()
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for elementHash in elementHashes {
+            hash ^= elementHash
+            hash &*= 0x0000_0100_0000_01b3
+        }
+        hash ^= UInt64(tabs.count)
+        return hash
     }
 
     private func resolveWindow(for key: WindowKey) -> AXUIElement? {
@@ -589,7 +841,9 @@ public final class AccessibilityBridge: @unchecked Sendable {
                 window,
                 AccessibilityWindowMatchDescriptor(
                     title: metadata.title,
-                    bounds: metadata.bounds
+                    bounds: metadata.bounds,
+                    isPreferred: metadata.isMain,
+                    nativeTabCount: metadata.nativeTabCount
                 )
             )
         }
@@ -601,19 +855,12 @@ public final class AccessibilityBridge: @unchecked Sendable {
         }
         let windowDescriptors = eligibleWindows.map(\.descriptor)
         var result: [WindowKey: AXUIElement] = [:]
-
-        for (candidateIndex, candidate) in candidates.enumerated() {
-            guard let windowIndex =
-                AccessibilityGeometryMatcher.uniqueMatchIndex(
-                    target: candidateDescriptors[candidateIndex],
-                    candidates: windowDescriptors
-                ),
-                  AccessibilityGeometryMatcher.uniqueMatchIndex(
-                      target: windowDescriptors[windowIndex],
-                      candidates: candidateDescriptors
-                  ) == candidateIndex else {
-                continue
-            }
+        let assignments = AccessibilityGeometryMatcher.assignments(
+            candidates: candidateDescriptors,
+            windows: windowDescriptors
+        )
+        for (candidateIndex, windowIndex) in assignments {
+            let candidate = candidates[candidateIndex]
             result[candidate.key] = eligibleWindows[windowIndex].element
         }
         return result
@@ -742,6 +989,33 @@ private func copyElements(
         return []
     }
     return array
+}
+
+private func copyElementsWithStatus(
+    _ element: AXUIElement,
+    attribute: CFString
+) -> (error: AXError, elements: [AXUIElement]) {
+    var value: CFTypeRef?
+    let error = AXUIElementCopyAttributeValue(element, attribute, &value)
+    guard error == .success,
+          let value,
+          let elements = value as? [AXUIElement] else {
+        return (error, [])
+    }
+    return (error, elements)
+}
+
+private func firstNonblankString(
+    _ values: [String?]
+) -> String? {
+    for value in values {
+        let trimmed = value?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmed.isEmpty {
+            return trimmed
+        }
+    }
+    return nil
 }
 
 private func copyString(

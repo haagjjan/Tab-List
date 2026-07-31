@@ -47,4 +47,17 @@ struct WindowModelsTests {
         XCTAssertNotEqual(original, recycled)
         XCTAssertEqual(original.id, recycled.id)
     }
+
+    @Test
+    func testActionTargetRejectsARecycledWindowID() {
+        var original = TestFixtures.window(1, pid: 10)
+        original.incarnation = 4
+        var recycled = original
+        recycled.incarnation = 5
+
+        let target = WindowActionTarget(original)
+
+        XCTAssertTrue(target.matches(original))
+        XCTAssertFalse(target.matches(recycled))
+    }
 }

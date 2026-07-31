@@ -3,28 +3,89 @@ import CoreGraphics
 import TabListCore
 
 @MainActor
+private final class CenteredCollectionViewFlowLayout:
+    NSCollectionViewFlowLayout
+{
+    var itemCount = 0
+    var columnCount = 1
+    var centersIncompleteFinalRow = false
+
+    override func layoutAttributesForElements(
+        in rect: NSRect
+    ) -> [NSCollectionViewLayoutAttributes] {
+        super.layoutAttributesForElements(in: rect).map(adjusted)
+    }
+
+    override func layoutAttributesForItem(
+        at indexPath: IndexPath
+    ) -> NSCollectionViewLayoutAttributes? {
+        super.layoutAttributesForItem(at: indexPath).map(adjusted)
+    }
+
+    private func adjusted(
+        _ attributes: NSCollectionViewLayoutAttributes
+    ) -> NSCollectionViewLayoutAttributes {
+        guard centersIncompleteFinalRow,
+              attributes.representedElementCategory == .item,
+              columnCount > 1,
+              itemCount > 0,
+              let copy = attributes.copy()
+                as? NSCollectionViewLayoutAttributes
+        else {
+            return attributes
+        }
+        let lastRowCount = itemCount % columnCount
+        guard lastRowCount > 0,
+              let indexPath = attributes.indexPath,
+              indexPath.item >= itemCount - lastRowCount,
+              let collectionView
+        else {
+            return attributes
+        }
+        let rowWidth = (CGFloat(lastRowCount) * itemSize.width)
+            + (CGFloat(lastRowCount - 1) * minimumInteritemSpacing)
+        let centeredOrigin = max(
+            sectionInset.left,
+            (collectionView.bounds.width - rowWidth) / 2
+        )
+        copy.frame.origin.x += centeredOrigin - sectionInset.left
+        return copy
+    }
+}
+
+@MainActor
 final class SwitcherPanelController: NSWindowController, NSCollectionViewDelegate {
     var onActivate: ((WindowKey) -> Void)?
     var onClose: ((WindowKey) -> Void)?
 
-    private let materialView = NSVisualEffectView()
     private let scrollView = NSScrollView()
     private let collectionView = NSCollectionView()
-    private let flowLayout = NSCollectionViewFlowLayout()
+    private let flowLayout = CenteredCollectionViewFlowLayout()
+    private let feedbackLabel = NSTextField(labelWithString: "")
     private var dataSource:
         NSCollectionViewDiffableDataSource<Int, WindowKey>!
 
     private var items: [SwitcherDisplayItem] = []
     private var itemsByKey: [WindowKey: SwitcherDisplayItem] = [:]
     private var selectedIndex: Int?
+    private var pendingCloseKey: WindowKey?
     private var currentPresentation: PresentationMode = .thumbnails
     private var currentPanelSize: PanelSize = .auto
     private var currentTheme: ThemePreference = .system
     private var currentDisplayID: CGDirectDisplayID?
-    private var opacity: Double = 0.88
+    private var currentLayoutMetrics: PanelLayoutMetrics?
 
     var backingScaleFactor: CGFloat {
         window?.backingScaleFactor ?? 2
+    }
+
+    var thumbnailCaptureTargetSize: CGSize? {
+        currentLayoutMetrics?.previewViewportSize.map { viewport in
+            CGSize(
+                width: viewport.width * backingScaleFactor,
+                height: viewport.height * backingScaleFactor
+            )
+        }
     }
 
     var visibleWindowKeys: [WindowKey] {
@@ -69,7 +130,6 @@ final class SwitcherPanelController: NSWindowController, NSCollectionViewDelegat
         presentation: PresentationMode,
         panelSize: PanelSize,
         theme: ThemePreference,
-        opacity: Double,
         displayID: CGDirectDisplayID?
     ) {
         guard !items.isEmpty, let panel = window else { return }
@@ -84,34 +144,47 @@ final class SwitcherPanelController: NSWindowController, NSCollectionViewDelegat
         currentPanelSize = panelSize
         currentTheme = theme
         currentDisplayID = displayID
-        self.opacity = min(max(opacity, 0.70), 1.0)
 
         applyAppearance()
-        applyDataSnapshot(reloading: changedKeys)
         resizeAndCenter(panel)
-        updateSelection(scroll: false)
         panel.orderFrontRegardless()
-        updateSelection(scroll: true)
+        applyDataSnapshot(reloading: changedKeys) { [weak self] in
+            self?.updateSelection(
+                scroll: true,
+                movement: .stationary
+            )
+        }
     }
 
     func update(items: [SwitcherDisplayItem], selectedIndex: Int) {
         let changedKeys = replaceItems(items)
-        self.selectedIndex = items.isEmpty ? nil : min(max(0, selectedIndex), items.count - 1)
-        applyDataSnapshot(reloading: changedKeys)
+        self.selectedIndex = items.isEmpty
+            ? nil
+            : min(max(0, selectedIndex), items.count - 1)
         if items.isEmpty {
             hide()
         } else {
             if let panel = window {
                 resizeAndCenter(panel)
             }
-            updateSelection(scroll: true)
+            applyDataSnapshot(reloading: changedKeys) { [weak self] in
+                self?.updateSelection(
+                    scroll: true,
+                    movement: .stationary
+                )
+            }
         }
     }
 
     func select(index: Int) {
         guard items.indices.contains(index) else { return }
+        let movement = selectionMovement(
+            from: selectedIndex,
+            to: index,
+            itemCount: items.count
+        )
         selectedIndex = index
-        updateSelection(scroll: true)
+        updateSelection(scroll: true, movement: movement)
     }
 
     func hide() {
@@ -119,6 +192,8 @@ final class SwitcherPanelController: NSWindowController, NSCollectionViewDelegat
         items.removeAll(keepingCapacity: true)
         itemsByKey.removeAll(keepingCapacity: true)
         selectedIndex = nil
+        pendingCloseKey = nil
+        feedbackLabel.isHidden = true
         applyDataSnapshot(reloading: [])
     }
 
@@ -128,22 +203,28 @@ final class SwitcherPanelController: NSWindowController, NSCollectionViewDelegat
         contentView.layer?.cornerRadius = 16
         contentView.layer?.masksToBounds = true
 
-        materialView.material = .hudWindow
-        materialView.blendingMode = .behindWindow
-        materialView.state = .active
-        materialView.translatesAutoresizingMaskIntoConstraints = false
-
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
         scrollView.scrollerStyle = .overlay
-        scrollView.contentInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+        scrollView.automaticallyAdjustsContentInsets = false
+        scrollView.contentInsets = NSEdgeInsets(
+            top: 0,
+            left: 0,
+            bottom: 0,
+            right: 0
+        )
         scrollView.translatesAutoresizingMaskIntoConstraints = false
 
         flowLayout.minimumInteritemSpacing = 12
         flowLayout.minimumLineSpacing = 12
-        flowLayout.sectionInset = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+        flowLayout.sectionInset = NSEdgeInsets(
+            top: LayoutCalculator.outerPadding,
+            left: LayoutCalculator.outerPadding,
+            bottom: LayoutCalculator.outerPadding,
+            right: LayoutCalculator.outerPadding
+        )
 
         collectionView.collectionViewLayout = flowLayout
         collectionView.delegate = self
@@ -170,6 +251,7 @@ final class SwitcherPanelController: NSWindowController, NSCollectionViewDelegat
                 presentation: self.currentPresentation,
                 position: indexPath.item + 1,
                 total: self.items.count,
+                isActionPending: key == self.pendingCloseKey,
                 activateHandler: { [weak self] in
                     self?.onActivate?(key)
                 },
@@ -183,20 +265,52 @@ final class SwitcherPanelController: NSWindowController, NSCollectionViewDelegat
         collectionView.setAccessibilityRole(.list)
         scrollView.documentView = collectionView
 
-        contentView.addSubview(materialView)
         contentView.addSubview(scrollView)
 
-        NSLayoutConstraint.activate([
-            materialView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            materialView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            materialView.topAnchor.constraint(equalTo: contentView.topAnchor),
-            materialView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+        feedbackLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        feedbackLabel.textColor = .white
+        feedbackLabel.alignment = .center
+        feedbackLabel.wantsLayer = true
+        feedbackLabel.layer?.cornerRadius = 8
+        feedbackLabel.layer?.backgroundColor = NSColor.systemRed
+            .withAlphaComponent(0.92).cgColor
+        feedbackLabel.isHidden = true
+        feedbackLabel.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(feedbackLabel)
 
+        NSLayoutConstraint.activate([
             scrollView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             scrollView.topAnchor.constraint(equalTo: contentView.topAnchor),
             scrollView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
+            ,
+            feedbackLabel.centerXAnchor.constraint(
+                equalTo: contentView.centerXAnchor
+            ),
+            feedbackLabel.bottomAnchor.constraint(
+                equalTo: contentView.bottomAnchor,
+                constant: -10
+            ),
+            feedbackLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 360),
+            feedbackLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: 30)
         ])
+    }
+
+    func setPendingClose(_ key: WindowKey?) {
+        let changed = Set([pendingCloseKey, key].compactMap { $0 })
+        pendingCloseKey = key
+        feedbackLabel.isHidden = true
+        applyDataSnapshot(reloading: changed)
+    }
+
+    func showFeedback(_ message: String) {
+        feedbackLabel.stringValue = "  \(message)  "
+        feedbackLabel.isHidden = false
+        feedbackLabel.superview?.addSubview(
+            feedbackLabel,
+            positioned: .above,
+            relativeTo: scrollView
+        )
     }
 
     private func resizeAndCenter(_ panel: NSWindow) {
@@ -215,7 +329,13 @@ final class SwitcherPanelController: NSWindowController, NSCollectionViewDelegat
             width: metrics.itemSize.width,
             height: metrics.itemSize.height
         )
+        flowLayout.itemCount = items.count
+        flowLayout.columnCount = metrics.columns
+        flowLayout.centersIncompleteFinalRow =
+            metrics.centersIncompleteFinalRow
+        currentLayoutMetrics = metrics
         flowLayout.invalidateLayout()
+        scrollView.hasVerticalScroller = metrics.isScrollable
 
         let origin = NSPoint(
             x: visibleFrame.midX - metrics.panelSize.width / 2,
@@ -233,19 +353,69 @@ final class SwitcherPanelController: NSWindowController, NSCollectionViewDelegat
         )
     }
 
-    private func updateSelection(scroll: Bool) {
-        collectionView.selectionIndexPaths = selectedIndex.map { [IndexPath(item: $0, section: 0)] } ?? []
+    private func updateSelection(
+        scroll: Bool,
+        movement: SelectionMovement
+    ) {
+        collectionView.selectionIndexPaths = selectedIndex.map {
+            [IndexPath(item: $0, section: 0)]
+        } ?? []
         for case let cell as SwitcherCollectionItem in collectionView.visibleItems() {
             if let indexPath = collectionView.indexPath(for: cell) {
                 cell.isSelected = indexPath.item == selectedIndex
             }
         }
-        if scroll, let selectedIndex {
+        guard scroll, let selectedIndex else { return }
+        revealSelection(at: selectedIndex, movement: movement)
+    }
+
+    private func revealSelection(
+        at index: Int,
+        movement: SelectionMovement
+    ) {
+        let indexPath = IndexPath(item: index, section: 0)
+        collectionView.layoutSubtreeIfNeeded()
+        guard let selectedFrame = flowLayout
+            .layoutAttributesForItem(at: indexPath)?
+            .frame
+        else {
             collectionView.scrollToItems(
-                at: [IndexPath(item: selectedIndex, section: 0)],
-                scrollPosition: .nearestVerticalEdge
+                at: [indexPath],
+                scrollPosition: .centeredVertically
             )
+            return
         }
+
+        let alignment = SelectionScrollPlanner.alignment(
+            selectedFrame: selectedFrame,
+            visibleRect: collectionView.visibleRect,
+            movement: movement
+        )
+        guard alignment == .centered else { return }
+        collectionView.scrollToItems(
+            at: [indexPath],
+            scrollPosition: .centeredVertically
+        )
+    }
+
+    private func selectionMovement(
+        from previous: Int?,
+        to next: Int,
+        itemCount: Int
+    ) -> SelectionMovement {
+        guard let previous,
+              previous != next,
+              itemCount > 1
+        else {
+            return .stationary
+        }
+        if previous == itemCount - 1, next == 0 {
+            return .forward
+        }
+        if previous == 0, next == itemCount - 1 {
+            return .backward
+        }
+        return next > previous ? .forward : .backward
     }
 
     private func replaceItems(
@@ -267,8 +437,14 @@ final class SwitcherPanelController: NSWindowController, NSCollectionViewDelegat
         return changedKeys
     }
 
-    private func applyDataSnapshot(reloading changedKeys: Set<WindowKey>) {
-        guard let dataSource else { return }
+    private func applyDataSnapshot(
+        reloading changedKeys: Set<WindowKey>,
+        completion: (() -> Void)? = nil
+    ) {
+        guard let dataSource else {
+            completion?()
+            return
+        }
         let identifiers = items.map(\.window.id)
         let previous = Set(dataSource.snapshot().itemIdentifiers)
         var snapshot = NSDiffableDataSourceSnapshot<Int, WindowKey>()
@@ -280,7 +456,11 @@ final class SwitcherPanelController: NSWindowController, NSCollectionViewDelegat
         if !changedRetained.isEmpty {
             snapshot.reloadItems(changedRetained)
         }
-        dataSource.apply(snapshot, animatingDifferences: false)
+        dataSource.apply(
+            snapshot,
+            animatingDifferences: false,
+            completion: completion
+        )
     }
 
     private func applyAppearance() {
@@ -294,17 +474,14 @@ final class SwitcherPanelController: NSWindowController, NSCollectionViewDelegat
             window?.appearance = NSAppearance(named: .darkAqua)
         }
 
-        let reduceTransparency =
-            NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
-        if reduceTransparency {
-            materialView.isHidden = true
-            window?.contentView?.layer?.backgroundColor =
-                NSColor.windowBackgroundColor.cgColor
-        } else {
-            materialView.isHidden = false
-            materialView.material = .hudWindow
-            materialView.alphaValue = opacity
-            window?.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
+        // Alpha 2 uses a true semantic opaque surface. Avoiding a
+        // visual-effect view keeps underlying content from competing with
+        // titles and removes blur compositing from the lowest-resource mode.
+        if let window {
+            window.effectiveAppearance.performAsCurrentDrawingAppearance {
+                window.contentView?.layer?.backgroundColor =
+                    NSColor.windowBackgroundColor.cgColor
+            }
         }
         window?.animationBehavior =
             NSWorkspace.shared.accessibilityDisplayShouldReduceMotion

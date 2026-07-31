@@ -19,6 +19,31 @@ struct WindowClassificationTests {
     }
 
     @Test
+    func testAccessoryAndProhibitedProcessesAreExcluded() {
+        var accessory = TestFixtures.classificationInput()
+        accessory.ownerActivationPolicy = .accessory
+        var prohibited = TestFixtures.classificationInput()
+        prohibited.ownerActivationPolicy = .prohibited
+
+        XCTAssertEqual(
+            WindowClassifier.classify(accessory),
+            .excluded(.nonUserApplication(.accessory))
+        )
+        XCTAssertEqual(
+            WindowClassifier.classify(prohibited),
+            .excluded(.nonUserApplication(.prohibited))
+        )
+    }
+
+    @Test
+    func testUnknownActivationPolicyFailsOpenForPublicFallbacks() {
+        var input = TestFixtures.classificationInput()
+        input.ownerActivationPolicy = .unknown
+
+        XCTAssertEqual(WindowClassifier.classify(input), .standard)
+    }
+
+    @Test
     func testOwnAndSystemWindowsAreExcluded() {
         var own = TestFixtures.classificationInput()
         own.isOwnedByTabList = true
@@ -57,6 +82,18 @@ struct WindowClassificationTests {
         nonFinite.bounds.origin.x = .infinity
         XCTAssertEqual(
             WindowClassifier.classify(nonFinite),
+            .excluded(.invalidGeometry)
+        )
+
+        var menuBarStrip = TestFixtures.classificationInput()
+        menuBarStrip.bounds = CGRect(
+            x: 0,
+            y: 0,
+            width: 1_512,
+            height: 33
+        )
+        XCTAssertEqual(
+            WindowClassifier.classify(menuBarStrip),
             .excluded(.invalidGeometry)
         )
     }

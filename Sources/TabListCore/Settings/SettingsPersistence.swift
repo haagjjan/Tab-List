@@ -6,7 +6,7 @@ public enum SettingsPersistenceError: Error, Equatable, Sendable {
 }
 
 public struct PersistedSettingsEnvelope: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 1
+    public static let currentSchemaVersion = 2
 
     public let schemaVersion: Int
     public let settings: SettingsV1
@@ -51,7 +51,8 @@ public enum SettingsPersistence {
         decoder: JSONDecoder = JSONDecoder()
     ) throws -> DecodedSettings {
         if let envelope = try? decoder.decode(PersistedSettingsEnvelope.self, from: data) {
-            guard envelope.schemaVersion == PersistedSettingsEnvelope.currentSchemaVersion else {
+            guard (1 ... PersistedSettingsEnvelope.currentSchemaVersion)
+                .contains(envelope.schemaVersion) else {
                 throw SettingsPersistenceError.unsupportedSchemaVersion(envelope.schemaVersion)
             }
             return DecodedSettings(

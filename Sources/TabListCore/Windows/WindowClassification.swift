@@ -1,11 +1,28 @@
 import CoreGraphics
 import Foundation
 
+public enum WindowOwnerActivationPolicy: String, Equatable, Sendable {
+    case regular
+    case accessory
+    case prohibited
+    case unknown
+
+    public var canOwnSwitcherCandidates: Bool {
+        switch self {
+        case .regular, .unknown:
+            true
+        case .accessory, .prohibited:
+            false
+        }
+    }
+}
+
 /// Raw facts used to decide whether a WindowServer surface represents a
 /// user-switchable window.
 public struct WindowClassificationInput: Equatable, Sendable {
     public var ownerBundleIdentifier: String?
     public var ownerName: String
+    public var ownerActivationPolicy: WindowOwnerActivationPolicy
     public var bounds: CGRect
     public var layer: Int
     public var alpha: Double
@@ -20,6 +37,7 @@ public struct WindowClassificationInput: Equatable, Sendable {
     public init(
         ownerBundleIdentifier: String?,
         ownerName: String,
+        ownerActivationPolicy: WindowOwnerActivationPolicy = .unknown,
         bounds: CGRect,
         layer: Int,
         alpha: Double,
@@ -33,6 +51,7 @@ public struct WindowClassificationInput: Equatable, Sendable {
     ) {
         self.ownerBundleIdentifier = ownerBundleIdentifier
         self.ownerName = ownerName
+        self.ownerActivationPolicy = ownerActivationPolicy
         self.bounds = bounds
         self.layer = layer
         self.alpha = alpha
@@ -49,6 +68,7 @@ public struct WindowClassificationInput: Equatable, Sendable {
 public enum WindowExclusionReason: Equatable, Sendable {
     case ownApplication
     case systemSurface
+    case nonUserApplication(WindowOwnerActivationPolicy)
     case nonzeroLayer
     case invalidGeometry
     case invisibleSurface
@@ -95,6 +115,9 @@ public enum WindowClassifier {
         "com.apple.controlcenter",
     ]
 
+    private static let minimumUserWindowWidth: CGFloat = 80
+    private static let minimumUserWindowHeight: CGFloat = 64
+
     public static func classify(_ input: WindowClassificationInput) -> WindowClassification {
         if input.isOwnedByTabList {
             return .excluded(.ownApplication)
@@ -111,6 +134,12 @@ public enum WindowClassifier {
             return .excluded(.systemSurface)
         }
 
+        guard input.ownerActivationPolicy.canOwnSwitcherCandidates else {
+            return .excluded(
+                .nonUserApplication(input.ownerActivationPolicy)
+            )
+        }
+
         guard input.layer == 0 else {
             return .excluded(.nonzeroLayer)
         }
@@ -120,8 +149,8 @@ public enum WindowClassifier {
               bounds.origin.y.isFinite,
               bounds.width.isFinite,
               bounds.height.isFinite,
-              bounds.width > 1,
-              bounds.height > 1
+              bounds.width >= minimumUserWindowWidth,
+              bounds.height >= minimumUserWindowHeight
         else {
             return .excluded(.invalidGeometry)
         }

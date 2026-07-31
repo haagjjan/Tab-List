@@ -57,6 +57,41 @@ private struct ApplicationDescriptor: Sendable {
     let name: String
     let bundleURL: URL?
     let isHidden: Bool
+    let activationPolicy: WindowOwnerActivationPolicy
+}
+
+/// Resolves the WindowServer inventory to the canonical set that can be acted
+/// on as real top-level AX windows. Once a process has been enumerated through
+/// Accessibility, its unmatched compositor surfaces fail closed.
+enum WindowIdentityResolver {
+    static func canonicalCandidates(
+        _ candidates: [PublicWindowCandidate],
+        accessibilityInventory: AccessibilityWindowInventory
+    ) -> [PublicWindowCandidate] {
+        guard accessibilityInventory.isTrusted else { return candidates }
+        return candidates.filter { candidate in
+            !accessibilityInventory.inspectedPIDs.contains(candidate.key.pid)
+                || accessibilityInventory.metadata[candidate.key] != nil
+        }
+    }
+
+    static func isActionable(
+        hasAccessibilityWindow: Bool,
+        isOnScreen: Bool,
+        isMinimized: Bool,
+        isHiddenApplication: Bool,
+        hasExactActivation: Bool
+    ) -> Bool {
+        guard hasAccessibilityWindow else { return false }
+        // Public AX activation is dependable for an onscreen window and for
+        // ordinary minimized/hidden restoration. An otherwise offscreen
+        // window can live on another Space; exposing it without the validated
+        // exact activation bridge would create a selectable silent no-op.
+        return isOnScreen
+            || isMinimized
+            || isHiddenApplication
+            || hasExactActivation
+    }
 }
 
 /// Public, conservative inventory built from WindowServer metadata and enriched
@@ -100,18 +135,37 @@ public actor PublicWindowInventory: WindowInventoryProviding {
         var pids = Set(candidates.map(\.key.pid))
         pids.formUnion(await regularApplicationProcessIDs())
         let applications = await applicationDescriptors(for: pids)
-
-        let discoveredAccessibilityWindows = await accessibility
-            .discoveredWindows(for: pids)
-        let candidatesNeedingGeometryFallback = candidates.filter {
-            discoveredAccessibilityWindows[$0.key] == nil
-        }
-        let fallbackAccessibilityMetadata = await accessibility.metadata(
-            for: candidatesNeedingGeometryFallback
+        let accessibilityPIDs = Set(
+            pids.filter { pid in
+                pid != ownPID
+                    && (
+                        applications[pid]?.activationPolicy
+                            .canOwnSwitcherCandidates
+                            ?? true
+                    )
+            }
         )
-        let accessibilityMetadata = discoveredAccessibilityWindows.merging(
-            fallbackAccessibilityMetadata
-        ) { discovered, _ in discovered }
+
+        let accessibilityInventory = await accessibility.windowInventory(
+            for: accessibilityPIDs
+        )
+        let discoveredAccessibilityWindows = accessibilityInventory.metadata
+        let accessibilityMetadata = discoveredAccessibilityWindows
+
+        // Once AX successfully enumerates a process, its top-level windows are
+        // authoritative. Additional CG-only surfaces are native-tab members,
+        // backing stores, or helper surfaces and must not become switcher rows.
+        candidates = WindowIdentityResolver.canonicalCandidates(
+            candidates,
+            accessibilityInventory: accessibilityInventory
+        )
+
+        for (pid, count) in accessibilityInventory
+            .unresolvedStandardWindowCounts where count > 0 {
+            TabListLog.registry.notice(
+                "Excluded \(count, privacy: .public) unresolved AX windows for pid \(pid, privacy: .private(mask: .hash))"
+            )
+        }
 
         var knownCandidateKeys = Set(candidates.map(\.key))
         let accessibilityOnlyCandidates = discoveredAccessibilityWindows
@@ -151,6 +205,8 @@ public actor PublicWindowInventory: WindowInventoryProviding {
         records.reserveCapacity(candidates.count)
         var hasPubliclyVisibleWindow = false
         var visibleWindowKeys: Set<WindowKey> = []
+        let hasExactActivation = windowServer.capabilityReport.operational
+            .contains(.exactActivation)
 
         for candidate in candidates {
             let application = applications[candidate.key.pid]
@@ -163,6 +219,8 @@ public actor PublicWindowInventory: WindowInventoryProviding {
                 WindowClassificationInput(
                     ownerBundleIdentifier: bundleIdentifier,
                     ownerName: ownerName,
+                    ownerActivationPolicy:
+                        application?.activationPolicy ?? .unknown,
                     bounds: resolvedBounds,
                     layer: candidate.layer,
                     alpha: candidate.alpha,
@@ -178,7 +236,14 @@ public actor PublicWindowInventory: WindowInventoryProviding {
                     isTransparentSurface: candidate.alpha <= 0.01
                 )
             )
-            guard classification.isEligible else { continue }
+            guard classification.isEligible else {
+                if case let .excluded(reason) = classification {
+                    TabListLog.registry.debug(
+                        "Excluded pid \(candidate.key.pid, privacy: .private(mask: .hash)) window \(candidate.key.windowID, privacy: .private(mask: .hash)) reason \(reason.diagnosticCode, privacy: .public)"
+                    )
+                }
+                continue
+            }
             if candidate.isOnScreen {
                 visibleWindowKeys.insert(candidate.key)
             }
@@ -202,7 +267,10 @@ public actor PublicWindowInventory: WindowInventoryProviding {
                     bundleIdentifier: bundleIdentifier,
                     applicationName: ownerName,
                     bundleURL: application?.bundleURL,
-                    windowTitle: metadata?.title ?? candidate.title,
+                    windowTitle: Self.preferredWindowTitle(
+                        accessibilityTitle: metadata?.title,
+                        windowServerTitle: candidate.title
+                    ),
                     bounds: resolvedBounds,
                     spaceIDs: spaces,
                     displayID: displayID(containing: resolvedBounds),
@@ -211,6 +279,16 @@ public actor PublicWindowInventory: WindowInventoryProviding {
                     isFullscreen: metadata?.isFullscreen ?? false,
                     isStandardWindow: true,
                     isClosable: metadata?.isClosable ?? false,
+                    identitySource: accessibilityInventory.identitySources[
+                        candidate.key
+                    ] ?? .publicWindowSurface,
+                    isActionable: WindowIdentityResolver.isActionable(
+                        hasAccessibilityWindow: metadata != nil,
+                        isOnScreen: candidate.isOnScreen,
+                        isMinimized: metadata?.isMinimized ?? false,
+                        isHiddenApplication: application?.isHidden ?? false,
+                        hasExactActivation: hasExactActivation
+                    ),
                     lastFocusSequence: 0
                 )
             )
@@ -223,7 +301,8 @@ public actor PublicWindowInventory: WindowInventoryProviding {
         }
         let filteredRecords = Self.removingInactiveNativeTabMembers(
             from: records,
-            candidates: candidateByKey
+            candidates: candidateByKey,
+            accessibilityMetadata: accessibilityMetadata
         )
         let retainedKeys = Set(filteredRecords.map(\.id))
         TabListLog.registry.debug(
@@ -307,10 +386,27 @@ public actor PublicWindowInventory: WindowInventoryProviding {
                     bundleIdentifier: app.bundleIdentifier,
                     name: app.localizedName ?? "",
                     bundleURL: app.bundleURL,
-                    isHidden: app.isHidden
+                    isHidden: app.isHidden,
+                    activationPolicy: Self.activationPolicy(for: app)
                 )
             }
             return result
+        }
+    }
+
+    @MainActor
+    private static func activationPolicy(
+        for application: NSRunningApplication
+    ) -> WindowOwnerActivationPolicy {
+        switch application.activationPolicy {
+        case .regular:
+            .regular
+        case .accessory:
+            .accessory
+        case .prohibited:
+            .prohibited
+        @unknown default:
+            .unknown
         }
     }
 
@@ -371,8 +467,16 @@ public actor PublicWindowInventory: WindowInventoryProviding {
     /// windows are retained. This intentionally avoids title-based grouping.
     static func removingInactiveNativeTabMembers(
         from records: [WindowRecord],
-        candidates: [WindowKey: PublicWindowCandidate]
+        candidates: [WindowKey: PublicWindowCandidate],
+        accessibilityMetadata: [
+            WindowKey: AccessibilityWindowMetadata
+        ] = [:]
     ) -> [WindowRecord] {
+        struct ExplicitTabSignature: Hashable {
+            let pid: pid_t
+            let groupID: UInt64
+        }
+
         struct TabSignature: Hashable {
             let pid: pid_t
             let x: Int
@@ -393,9 +497,69 @@ public actor PublicWindowInventory: WindowInventoryProviding {
             )
         }
 
-        let grouped = Dictionary(grouping: records, by: signature)
         var inactiveKeys: Set<WindowKey> = []
+        let explicitGroups = Dictionary(
+            grouping: records.compactMap {
+                record -> (WindowRecord, ExplicitTabSignature)? in
+                guard let groupID = accessibilityMetadata[record.id]?
+                    .nativeTabGroupID
+                else {
+                    return nil
+                }
+                return (
+                    record,
+                    ExplicitTabSignature(
+                        pid: record.id.pid,
+                        groupID: groupID
+                    )
+                )
+            },
+            by: \.1
+        )
+        for entries in explicitGroups.values where entries.count > 1 {
+            let group = entries.map(\.0)
+            let visible = group.filter {
+                candidates[$0.id]?.isOnScreen == true && !$0.isMinimized
+            }
+            let main = group.filter {
+                accessibilityMetadata[$0.id]?.isMain == true
+            }
+            let retained = visible.count == 1
+                ? visible[0]
+                : main.count == 1
+                    ? main[0]
+                    : group[0]
+            inactiveKeys.formUnion(
+                group.lazy.map(\.id).filter { $0 != retained.id }
+            )
+        }
+
+        let remainingRecords = records.filter {
+            !inactiveKeys.contains($0.id)
+        }
+        let grouped = Dictionary(
+            grouping: remainingRecords,
+            by: signature
+        )
         for group in grouped.values where group.count > 1 {
+            let tabContainerEvidence = group.filter {
+                accessibilityMetadata[$0.id]?.nativeTabCount
+                    == group.count
+                    && accessibilityMetadata[$0.id]?.nativeTabGroupID != nil
+            }
+            if !tabContainerEvidence.isEmpty {
+                let main = tabContainerEvidence.filter {
+                    accessibilityMetadata[$0.id]?.isMain == true
+                }
+                let retained = main.count == 1 ? main[0] : group[0]
+                inactiveKeys.formUnion(
+                    group.lazy.map(\.id).filter {
+                        $0 != retained.id
+                    }
+                )
+                continue
+            }
+
             // Unknown Space membership cannot prove a native tab relation.
             // Failing open preserves separate same-app windows on different
             // Spaces when the private Space query is unavailable.
@@ -413,6 +577,49 @@ public actor PublicWindowInventory: WindowInventoryProviding {
             }
         }
         return records.filter { !inactiveKeys.contains($0.id) }
+    }
+
+    static func preferredWindowTitle(
+        accessibilityTitle: String?,
+        windowServerTitle: String
+    ) -> String {
+        for value in [accessibilityTitle, windowServerTitle] {
+            let trimmed = value?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !trimmed.isEmpty {
+                return trimmed
+            }
+        }
+        return ""
+    }
+}
+
+private extension WindowExclusionReason {
+    var diagnosticCode: String {
+        switch self {
+        case .ownApplication:
+            "own-application"
+        case .systemSurface:
+            "system-surface"
+        case let .nonUserApplication(policy):
+            "non-user-application-\(policy.rawValue)"
+        case .nonzeroLayer:
+            "nonzero-layer"
+        case .invalidGeometry:
+            "invalid-geometry"
+        case .invisibleSurface:
+            "invisible-surface"
+        case .desktopElement:
+            "desktop-element"
+        case .notification:
+            "notification"
+        case .inactiveTab:
+            "inactive-tab"
+        case let .unsupportedRole(role):
+            "unsupported-role-\(role)"
+        case let .unsupportedSubrole(subrole):
+            "unsupported-subrole-\(subrole)"
+        }
     }
 }
 

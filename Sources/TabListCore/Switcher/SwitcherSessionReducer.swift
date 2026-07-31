@@ -31,8 +31,10 @@ public struct SwitcherSessionState: Equatable, Sendable {
     public internal(set) var items: [WindowRecord]
     public internal(set) var selectedIndex: Int?
     public internal(set) var pendingClose: WindowKey?
+    public internal(set) var commitWhenCloseCompletes: Bool
     public internal(set) var initialDirection: SwitcherDirection
     public internal(set) var queuedCycleOffset: Int
+    public internal(set) var queuedCycleClampsAtBoundary: Bool
     public internal(set) var commitWhenPrepared: Bool
     public internal(set) var panelPresented: Bool
 
@@ -43,8 +45,10 @@ public struct SwitcherSessionState: Equatable, Sendable {
         items: [WindowRecord] = [],
         selectedIndex: Int? = nil,
         pendingClose: WindowKey? = nil,
+        commitWhenCloseCompletes: Bool = false,
         initialDirection: SwitcherDirection = .forward,
         queuedCycleOffset: Int = 0,
+        queuedCycleClampsAtBoundary: Bool = false,
         commitWhenPrepared: Bool = false,
         panelPresented: Bool = false
     ) {
@@ -54,8 +58,10 @@ public struct SwitcherSessionState: Equatable, Sendable {
         self.items = items
         self.selectedIndex = selectedIndex
         self.pendingClose = pendingClose
+        self.commitWhenCloseCompletes = commitWhenCloseCompletes
         self.initialDirection = initialDirection
         self.queuedCycleOffset = queuedCycleOffset
+        self.queuedCycleClampsAtBoundary = queuedCycleClampsAtBoundary
         self.commitWhenPrepared = commitWhenPrepared
         self.panelPresented = panelPresented
         repairSelectionInvariant()
@@ -96,6 +102,7 @@ public enum SwitcherSessionAction: Equatable, Sendable {
     case prepared(snapshotGeneration: UInt64, orderedItems: [WindowRecord])
     case preparationFailed
     case cycle(SwitcherDirection)
+    case repeatedCycle(SwitcherDirection)
     case mouseActivate(index: Int)
     case modifierReleased
     case cancel
@@ -115,7 +122,13 @@ public enum SwitcherSessionEffect: Equatable, Sendable {
     case dismissPanel
     case activate(WindowKey)
     case close(WindowKey)
+    case showFeedback(SwitcherSessionFeedback)
     case beep
+}
+
+public enum SwitcherSessionFeedback: Equatable, Sendable {
+    case activationFailed
+    case closeFailed
 }
 
 /// A deterministic state machine. Side effects are returned to the main-actor
@@ -135,6 +148,7 @@ public enum SwitcherSessionReducer {
             state.originalFocus = originalFocus
             state.initialDirection = initialDirection
             state.queuedCycleOffset = 0
+            state.queuedCycleClampsAtBoundary = false
             state.commitWhenPrepared = false
             return [.requestSnapshot(forceRefreshIfStale: true)]
 
@@ -181,6 +195,34 @@ public enum SwitcherSessionReducer {
             state.selectedIndex = nextIndex
             return [.selectionChanged(index: nextIndex)]
 
+        case let .repeatedCycle(direction):
+            if state.phase == .preparing {
+                switch direction {
+                case .forward where state.queuedCycleOffset < .max:
+                    state.queuedCycleOffset += 1
+                case .backward where state.queuedCycleOffset > .min:
+                    state.queuedCycleOffset -= 1
+                case .forward, .backward:
+                    break
+                }
+                state.queuedCycleClampsAtBoundary = true
+                return []
+            }
+            guard state.phase == .visible,
+                  !state.items.isEmpty,
+                  let selectedIndex = state.selectedIndex
+            else {
+                return []
+            }
+            let delta = direction == .forward ? 1 : -1
+            let nextIndex = min(
+                max(0, selectedIndex + delta),
+                state.items.count - 1
+            )
+            guard nextIndex != selectedIndex else { return [] }
+            state.selectedIndex = nextIndex
+            return [.selectionChanged(index: nextIndex)]
+
         case let .mouseActivate(index):
             guard state.phase == .visible,
                   state.items.indices.contains(index)
@@ -198,6 +240,10 @@ public enum SwitcherSessionReducer {
             guard state.phase == .visible else {
                 return []
             }
+            if state.pendingClose != nil {
+                state.commitWhenCloseCompletes = true
+                return []
+            }
             return beginCommit(state: &state)
 
         case .cancel:
@@ -208,6 +254,7 @@ public enum SwitcherSessionReducer {
             case .visible:
                 state.phase = .cancelling
                 state.pendingClose = nil
+                state.commitWhenCloseCompletes = false
                 return [.dismissPanel]
             case .idle, .committing, .cancelling:
                 return []
@@ -237,18 +284,40 @@ public enum SwitcherSessionReducer {
             else {
                 return []
             }
+            let shouldCommitAfterClose = state.commitWhenCloseCompletes
             state.pendingClose = nil
-            return handleCloseResult(state: &state, key: key, result: result)
+            state.commitWhenCloseCompletes = false
+            var effects = handleCloseResult(
+                state: &state,
+                key: key,
+                result: result
+            )
+            if shouldCommitAfterClose,
+               (result.succeeded || result == .targetMissing),
+               state.phase == .visible,
+               let selected = state.selectedWindow {
+                state.phase = .committing
+                effects.append(.activate(selected.id))
+            }
+            return effects
 
         case let .activationCompleted(result):
             guard state.phase == .committing else {
                 return []
             }
-            state.reset()
-            return result.succeeded ? [] : [.beep]
+            if result.succeeded {
+                state.reset()
+                return [.dismissPanel]
+            }
+            state.phase = .visible
+            return [
+                .showFeedback(.activationFailed),
+                .beep,
+            ]
 
         case let .registryUpdated(snapshotGeneration, orderedItems):
             guard state.phase == .visible,
+                  state.pendingClose == nil,
                   snapshotGeneration > (state.snapshotGeneration ?? 0)
             else {
                 return []
@@ -308,17 +377,27 @@ public enum SwitcherSessionReducer {
                 initialIndex = orderedItems.indices.last ?? firstAlternativeIndex
             }
         }
-        let normalizedQueuedOffset = state.queuedCycleOffset % orderedItems.count
-        let queuedIndex = wrappedIndex(
-            initialIndex + normalizedQueuedOffset,
-            count: orderedItems.count
-        )
+        let queuedIndex: Int
+        if state.queuedCycleClampsAtBoundary {
+            queuedIndex = min(
+                max(0, initialIndex + state.queuedCycleOffset),
+                orderedItems.count - 1
+            )
+        } else {
+            let normalizedQueuedOffset =
+                state.queuedCycleOffset % orderedItems.count
+            queuedIndex = wrappedIndex(
+                initialIndex + normalizedQueuedOffset,
+                count: orderedItems.count
+            )
+        }
 
         state.snapshotGeneration = snapshotGeneration
         state.items = orderedItems
         state.selectedIndex = queuedIndex
         state.pendingClose = nil
         state.queuedCycleOffset = 0
+        state.queuedCycleClampsAtBoundary = false
 
         if state.commitWhenPrepared {
             state.phase = .committing
@@ -344,10 +423,7 @@ public enum SwitcherSessionReducer {
         }
         state.phase = .committing
         state.pendingClose = nil
-        return [
-            .dismissPanel,
-            .activate(selected.id),
-        ]
+        return [.activate(selected.id)]
     }
 
     private static func handleCloseResult(
@@ -356,7 +432,7 @@ public enum SwitcherSessionReducer {
         result: WindowActionResult
     ) -> [SwitcherSessionEffect] {
         switch result {
-        case .success, .targetMissing:
+        case .success, .windowClosed, .applicationQuit, .targetMissing:
             return removeClosedItem(state: &state, key: key)
         case .confirmationRequired:
             state.phase = .committing
@@ -365,7 +441,10 @@ public enum SwitcherSessionReducer {
                 .activate(key),
             ]
         case .permissionDenied, .unsupported, .timedOut, .failed:
-            return [.beep]
+            return [
+                .showFeedback(.closeFailed),
+                .beep,
+            ]
         }
     }
 
@@ -389,6 +468,7 @@ public enum SwitcherSessionReducer {
             return effects
         }
         state.pendingClose = selected.id
+        state.commitWhenCloseCompletes = false
         effects.append(.close(selected.id))
         return effects
     }

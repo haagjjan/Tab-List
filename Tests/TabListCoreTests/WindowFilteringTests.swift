@@ -85,6 +85,22 @@ struct WindowFilteringTests {
     }
 
     @Test
+    func testUnresolvedWindowIdentityIsNeverSelectable() {
+        let unresolved = TestFixtures.window(1, isActionable: false)
+
+        XCTAssertFalse(
+            WindowFilter.includes(
+                unresolved,
+                settings: .default,
+                context: WindowFilterContext(
+                    visibleSpaceIDs: [1],
+                    pointerDisplayID: 10
+                )
+            )
+        )
+    }
+
+    @Test
     func testVisibleSpaceScopeRequiresAnIntersectingKnownSpace() {
         var settings = SettingsV1.default
         settings.spaceScope = .visibleSpaces

@@ -16,6 +16,50 @@ public struct WindowKey: Hashable, Codable, Sendable {
     }
 }
 
+/// A session-scoped action reference. WindowServer IDs can be recycled, so an
+/// action is valid only while both its process-scoped key and registry
+/// incarnation still match the canonical record shown to the user.
+public struct WindowActionTarget: Equatable, Sendable {
+    public let key: WindowKey
+    public let incarnation: UInt64
+
+    public init(key: WindowKey, incarnation: UInt64) {
+        self.key = key
+        self.incarnation = incarnation
+    }
+
+    public init(_ record: WindowRecord) {
+        key = record.id
+        incarnation = record.incarnation
+    }
+
+    public func matches(_ record: WindowRecord) -> Bool {
+        key == record.id && incarnation == record.incarnation
+    }
+}
+
+/// Describes the evidence used to map an item to a real Accessibility window.
+/// It is diagnostic metadata only and is never persisted across launches.
+public enum WindowIdentitySource: String, Codable, Sendable {
+    case exactAccessibilityID
+    case uniqueGeometry
+    case publicWindowSurface
+
+    public var confidence: WindowIdentityConfidence {
+        switch self {
+        case .exactAccessibilityID: .exact
+        case .uniqueGeometry: .unambiguousFallback
+        case .publicWindowSurface: .unverified
+        }
+    }
+}
+
+public enum WindowIdentityConfidence: String, Codable, Sendable {
+    case exact
+    case unambiguousFallback
+    case unverified
+}
+
 /// Framework-neutral metadata used by filtering, ordering, and switcher UI code.
 ///
 /// References to `AXUIElement`, `SCWindow`, and AppKit images deliberately live
@@ -34,6 +78,8 @@ public struct WindowRecord: Identifiable, Equatable, Sendable {
     public var isFullscreen: Bool
     public var isStandardWindow: Bool
     public var isClosable: Bool
+    public var identitySource: WindowIdentitySource
+    public var isActionable: Bool
     public var lastFocusSequence: UInt64
     /// Process-local registry identity used to prevent a recycled WindowServer
     /// ID from inheriting cached pixels from a previously closed window.
@@ -53,6 +99,8 @@ public struct WindowRecord: Identifiable, Equatable, Sendable {
         isFullscreen: Bool,
         isStandardWindow: Bool,
         isClosable: Bool,
+        identitySource: WindowIdentitySource = .publicWindowSurface,
+        isActionable: Bool = true,
         lastFocusSequence: UInt64,
         incarnation: UInt64 = 0
     ) {
@@ -69,6 +117,8 @@ public struct WindowRecord: Identifiable, Equatable, Sendable {
         self.isFullscreen = isFullscreen
         self.isStandardWindow = isStandardWindow
         self.isClosable = isClosable
+        self.identitySource = identitySource
+        self.isActionable = isActionable
         self.lastFocusSequence = lastFocusSequence
         self.incarnation = incarnation
     }

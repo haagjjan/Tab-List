@@ -61,6 +61,7 @@ targets:
     settings:
       base:
         DEFINES_MODULE: YES
+        GENERATE_INFOPLIST_FILE: YES
         PRODUCT_BUNDLE_IDENTIFIER: com.haagjjan.TabListCore
         PRODUCT_MODULE_NAME: TabListCore
         SKIP_INSTALL: YES
@@ -194,6 +195,8 @@ targets:
       - target: TabList
     settings:
       base:
+        CODE_SIGN_IDENTITY: "-"
+        ENABLE_HARDENED_RUNTIME: NO
         GENERATE_INFOPLIST_FILE: YES
         PRODUCT_BUNDLE_IDENTIFIER: com.haagjjan.TabListUITests
         TEST_TARGET_NAME: TabList
@@ -207,11 +210,25 @@ targets:
       - target: WindowFixture
     settings:
       base:
+        CODE_SIGN_IDENTITY: "-"
+        ENABLE_HARDENED_RUNTIME: NO
         GENERATE_INFOPLIST_FILE: YES
         PRODUCT_BUNDLE_IDENTIFIER: com.haagjjan.TabList.WindowFixtureUITests
         TEST_TARGET_NAME: WindowFixture
 
 schemes:
+  TabList-Cross-Space-Debug:
+    build:
+      targets:
+        TabList: [run]
+    run:
+      config: Debug
+      executable: TabList
+      environmentVariables:
+        TABLIST_ENABLE_UNVERIFIED_AX_WINDOW_ID: "1"
+        TABLIST_ENABLE_UNVERIFIED_SPACE_APIS: "1"
+        TABLIST_ENABLE_UNVERIFIED_EXACT_ACTIVATION: "1"
+
   TabList-CI:
     build:
       targets:

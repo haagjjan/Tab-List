@@ -22,6 +22,11 @@ private struct BackgroundThumbnailFingerprint: Equatable, Sendable {
     }
 }
 
+private struct QueuedShortcutCycle: Sendable {
+    let direction: SwitcherDirection
+    let isRepeat: Bool
+}
+
 struct BackgroundThumbnailRefreshTracker: Sendable {
     private struct Entry: Sendable {
         let fingerprint: BackgroundThumbnailFingerprint
@@ -101,7 +106,7 @@ final class SwitcherSessionCoordinator {
 
     private var sessionGeneration: UInt64 = 0
     private var resolvingInitialFocus = false
-    private var queuedDirectionsBeforeBegin: [SwitcherDirection] = []
+    private var queuedDirectionsBeforeBegin: [QueuedShortcutCycle] = []
     private var commitWhenPrepared = false
     private var prefetchedOpeningSnapshot: WindowSnapshot?
     private var sessionPointerDisplayID: CGDirectDisplayID?
@@ -156,12 +161,21 @@ final class SwitcherSessionCoordinator {
         switch command {
         case let .begin(reverse):
             begin(reverse: reverse)
-        case let .cycle(reverse):
+        case let .cycle(reverse, isRepeat):
             let direction: SwitcherDirection = reverse ? .backward : .forward
             if resolvingInitialFocus {
-                queuedDirectionsBeforeBegin.append(direction)
+                queuedDirectionsBeforeBegin.append(
+                    QueuedShortcutCycle(
+                        direction: direction,
+                        isRepeat: isRepeat
+                    )
+                )
             } else {
-                apply(.cycle(direction))
+                apply(
+                    isRepeat
+                        ? .repeatedCycle(direction)
+                        : .cycle(direction)
+                )
             }
         case .commit:
             if resolvingInitialFocus {
@@ -425,8 +439,12 @@ final class SwitcherSessionCoordinator {
 
             let queued = self.queuedDirectionsBeforeBegin
             self.queuedDirectionsBeforeBegin.removeAll(keepingCapacity: true)
-            for direction in queued {
-                self.apply(.cycle(direction))
+            for cycle in queued {
+                self.apply(
+                    cycle.isRepeat
+                        ? .repeatedCycle(cycle.direction)
+                        : .cycle(cycle.direction)
+                )
             }
             if self.commitWhenPrepared {
                 self.commitWhenPrepared = false
@@ -452,10 +470,14 @@ final class SwitcherSessionCoordinator {
     }
 
     private func apply(_ action: SwitcherSessionAction) {
+        let previousPendingClose = state.pendingClose
         let effects = SwitcherSessionReducer.reduce(
             state: &state,
             action: action
         )
+        if previousPendingClose != state.pendingClose {
+            panelController.setPendingClose(state.pendingClose)
+        }
         execute(effects)
 
         if state.phase == .idle {
@@ -505,6 +527,17 @@ final class SwitcherSessionCoordinator {
                 performActivation(key)
             case let .close(key):
                 performClose(key)
+            case let .showFeedback(feedback):
+                switch feedback {
+                case .activationFailed:
+                    panelController.showFeedback(
+                        String(localized: "Couldn’t switch to this window.")
+                    )
+                case .closeFailed:
+                    panelController.showFeedback(
+                        String(localized: "Couldn’t close this window.")
+                    )
+                }
             case .beep:
                 NSSound.beep()
             }
@@ -665,7 +698,6 @@ final class SwitcherSessionCoordinator {
                 presentation: settings.presentation,
                 panelSize: settings.panelSize,
                 theme: settings.theme,
-                opacity: settings.opacity,
                 displayID: sessionPointerDisplayID
             )
             endAppearanceSignpost()
@@ -854,10 +886,11 @@ final class SwitcherSessionCoordinator {
                 : priority,
             visibleKeys: panelController.visibleWindowKeys
         )
-        let targetSize = Self.thumbnailTargetSize(
-            for: settings.panelSize,
-            backingScaleFactor: panelController.backingScaleFactor
-        )
+        let targetSize = panelController.thumbnailCaptureTargetSize
+            ?? Self.thumbnailTargetSize(
+                for: settings.panelSize,
+                backingScaleFactor: panelController.backingScaleFactor
+            )
 
         captureTask = Task { [weak self] in
             await service.cancelPending()
@@ -982,11 +1015,16 @@ final class SwitcherSessionCoordinator {
     }
 
     private func performActivation(_ key: WindowKey) {
+        guard let record = state.items.first(where: { $0.id == key }) else {
+            apply(.activationCompleted(.targetMissing))
+            return
+        }
+        let target = WindowActionTarget(record)
         let generation = sessionGeneration
         endAppearanceSignpost()
         let interval = Self.signposter.beginInterval("Window Activation")
         Task { [weak self, windowActions] in
-            let result = await windowActions.activate(key)
+            let result = await windowActions.activate(target)
             Self.signposter.endInterval("Window Activation", interval)
             guard let self,
                   generation == self.sessionGeneration
@@ -999,14 +1037,22 @@ final class SwitcherSessionCoordinator {
     }
 
     private func performClose(_ key: WindowKey) {
+        guard let record = state.items.first(where: { $0.id == key }) else {
+            apply(.closeCompleted(key: key, result: .targetMissing))
+            return
+        }
+        let target = WindowActionTarget(record)
         let generation = sessionGeneration
         Task { [weak self, windowActions] in
-            let result = await windowActions.close(key)
+            let result = await windowActions.close(target)
             guard let self,
                   generation == self.sessionGeneration
             else {
                 return
             }
+            TabListLog.windowActions.debug(
+                "Close completed for pid \(key.pid, privacy: .private(mask: .hash)) window \(key.windowID, privacy: .private(mask: .hash)) result \(result.diagnosticCode, privacy: .public)"
+            )
             self.apply(.closeCompleted(key: key, result: result))
         }
     }

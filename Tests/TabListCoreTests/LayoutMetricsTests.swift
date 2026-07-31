@@ -7,7 +7,7 @@ struct LayoutMetricsTests {
     private let display = CGRect(x: 0, y: 0, width: 1_440, height: 900)
 
     @Test
-    func testPresetWidthsMatchSpecification() {
+    func testThumbnailPresetsShrinkWrapSmallCandidateCounts() {
         XCTAssertEqual(
             LayoutCalculator.metrics(
                 preset: .small,
@@ -15,7 +15,7 @@ struct LayoutMetricsTests {
                 displayVisibleFrame: display,
                 itemCount: 1
             ).panelSize.width,
-            620
+            272
         )
         XCTAssertEqual(
             LayoutCalculator.metrics(
@@ -24,7 +24,7 @@ struct LayoutMetricsTests {
                 displayVisibleFrame: display,
                 itemCount: 1
             ).panelSize.width,
-            900
+            332
         )
         XCTAssertEqual(
             LayoutCalculator.metrics(
@@ -33,7 +33,7 @@ struct LayoutMetricsTests {
                 displayVisibleFrame: display,
                 itemCount: 1
             ).panelSize.width,
-            1_200
+            392
         )
     }
 
@@ -52,8 +52,11 @@ struct LayoutMetricsTests {
             itemCount: 1
         )
 
-        XCTAssertEqual(thumbnail.previewSize, CGSize(width: 300, height: 200))
-        XCTAssertEqual(thumbnail.itemSize.height, 244)
+        XCTAssertEqual(
+            thumbnail.previewViewportSize,
+            CGSize(width: 284, height: 177.5)
+        )
+        XCTAssertEqual(thumbnail.itemSize.height, 237.5)
         XCTAssertEqual(title.itemSize.height, 56)
         XCTAssertEqual(title.columns, 1)
     }
@@ -73,7 +76,7 @@ struct LayoutMetricsTests {
     }
 
     @Test
-    func testSmallestAutomaticPresetWithAtMostThreeRowsIsChosen() {
+    func testAutomaticThumbnailLayoutUsesTwoRowsForFourToEightItems() {
         let sixItems = LayoutCalculator.metrics(
             preset: .auto,
             presentation: .thumbnails,
@@ -87,10 +90,13 @@ struct LayoutMetricsTests {
             itemCount: 7
         )
 
-        XCTAssertEqual(sixItems.resolvedPreset, .small)
-        XCTAssertEqual(sixItems.rows, 3)
+        XCTAssertEqual(sixItems.resolvedPreset, .large)
+        XCTAssertEqual(sixItems.columns, 3)
+        XCTAssertEqual(sixItems.rows, 2)
         XCTAssertEqual(sevenItems.resolvedPreset, .large)
-        XCTAssertEqual(sevenItems.rows, 3)
+        XCTAssertEqual(sevenItems.columns, 4)
+        XCTAssertEqual(sevenItems.rows, 2)
+        XCTAssertTrue(sevenItems.centersIncompleteFinalRow)
     }
 
     @Test
@@ -105,6 +111,41 @@ struct LayoutMetricsTests {
         XCTAssertEqual(metrics.resolvedPreset, .small)
         XCTAssertEqual(metrics.itemSize.height, 40)
         XCTAssertEqual(metrics.rows, 8)
+    }
+
+    @Test
+    func testTitleModeGrowsIntrinsicallyThenEnablesScrolling() {
+        let one = LayoutCalculator.metrics(
+            preset: .auto,
+            presentation: .titles,
+            displayVisibleFrame: display,
+            itemCount: 1
+        )
+        let five = LayoutCalculator.metrics(
+            preset: .auto,
+            presentation: .titles,
+            displayVisibleFrame: display,
+            itemCount: 5
+        )
+        let twelve = LayoutCalculator.metrics(
+            preset: .auto,
+            presentation: .titles,
+            displayVisibleFrame: display,
+            itemCount: 12
+        )
+        let thirteen = LayoutCalculator.metrics(
+            preset: .auto,
+            presentation: .titles,
+            displayVisibleFrame: display,
+            itemCount: 13
+        )
+
+        XCTAssertEqual(one.panelSize.height, 72)
+        XCTAssertEqual(five.panelSize.height, 280)
+        XCTAssertEqual(twelve.panelSize.height, 644)
+        XCTAssertFalse(twelve.isScrollable)
+        XCTAssertEqual(thirteen.panelSize.height, 648)
+        XCTAssertTrue(thirteen.isScrollable)
     }
 
     @Test

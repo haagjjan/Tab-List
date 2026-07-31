@@ -45,6 +45,10 @@ struct DiagnosticsServiceTests {
         XCTAssertFalse(json.contains(sensitiveTitle))
         XCTAssertFalse(json.contains("com.example.SensitiveApp"))
         XCTAssertTrue(first.windows[0].hasTitle)
+        XCTAssertEqual(
+            first.windows[0].identityConfidence,
+            .unverified
+        )
         XCTAssertNotEqual(
             first.windows[0].bundleIdentifierHash,
             second.windows[0].bundleIdentifierHash

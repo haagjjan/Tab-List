@@ -50,6 +50,33 @@ entry point is:
 Scripts/ci.sh
 ```
 
+### Cross-Space compatibility testing
+
+The generated `TabList-Cross-Space-Debug` scheme enables the three isolated,
+Debug-only private capability gates needed to validate AX window identity,
+Space inventory, and exact cross-Space activation. Use that scheme only for
+the compatibility matrix in
+[`docs/human-actions/05_MACOS_COMPATIBILITY_AND_PRIVATE_ABI.md`](docs/human-actions/05_MACOS_COMPATIBILITY_AND_PRIVATE_ABI.md).
+The normal `TabList` scheme and every Release configuration keep unvalidated
+private ABIs disabled.
+
+### Debug Accessibility permission
+
+An ad-hoc Xcode Debug build can receive a new code identity after rebuilding.
+macOS may then leave the previous Tab-List entry visibly enabled under
+Privacy & Security while rejecting Accessibility calls from the new binary.
+This does not apply to an installed Developer ID-signed release.
+
+If Tab-List reports that Accessibility is not granted after a rebuild:
+
+1. Quit Tab-List.
+2. Run `Scripts/reset_debug_accessibility.sh`.
+3. Run Tab-List from Xcode again.
+4. Choose **Request Accessibility** and approve the new prompt.
+
+Using an Apple Development or Personal Team identity for local Debug signing
+also gives rebuilds a more stable designated identity.
+
 Command Line Tools 26.2 are sufficient for the portable validation path. It
 compiles the complete application source (without bundling Sparkle or app
 resources), runs the core and app-logic suites, and exercises deterministic

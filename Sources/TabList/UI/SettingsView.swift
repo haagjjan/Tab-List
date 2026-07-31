@@ -94,8 +94,7 @@ private struct AppearanceSettingsView: View {
                 AppearancePreview(
                     presentation: model.settings.presentation,
                     panelSize: model.settings.panelSize,
-                    theme: model.settings.theme,
-                    opacity: model.settings.opacity
+                    theme: model.settings.theme
                 )
                 .frame(height: 190)
             }
@@ -112,12 +111,9 @@ private struct AppearanceSettingsView: View {
                     Text("Light").tag(ThemePreference.light)
                     Text("Dark").tag(ThemePreference.dark)
                 }
-                HStack {
-                    Text("Opacity")
-                    Slider(value: model.binding(\.opacity), in: 0.70...1.0, step: 0.01)
-                    Text(model.settings.opacity, format: .percent.precision(.fractionLength(0)))
-                        .monospacedDigit()
-                        .frame(width: 42, alignment: .trailing)
+                LabeledContent("Background") {
+                    Text("Opaque")
+                        .foregroundStyle(.secondary)
                 }
             }
         }
@@ -144,7 +140,6 @@ private struct AppearancePreview: View {
     let presentation: TabListCore.PresentationMode
     let panelSize: PanelSize
     let theme: ThemePreference
-    let opacity: Double
 
     var body: some View {
         ZStack {
@@ -222,23 +217,66 @@ private struct AppearancePreview: View {
         switch presentation {
         case .thumbnails:
             VStack(alignment: .leading, spacing: 5) {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(.quaternary)
-                    .overlay {
-                        Image(systemName: symbols[index])
-                            .font(.title)
+                HStack(spacing: 4) {
+                    Image(systemName: symbols[index])
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(width: 12, height: 12)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(verbatim: applicationNames[index])
+                            .font(.system(size: 7, weight: .semibold))
+                        Text(verbatim: titles[index])
+                            .font(.system(size: 6))
+                            .foregroundStyle(.secondary)
                     }
-                Text(verbatim: titles[index])
-                    .font(.caption.bold())
                     .lineLimit(1)
+                    Spacer(minLength: 0)
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 8))
+                        .foregroundStyle(.tertiary)
+                }
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.accentColor.opacity(0.22),
+                                Color.primary.opacity(0.04),
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .overlay(alignment: .top) {
+                        VStack(spacing: 4) {
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(Color.primary.opacity(0.10))
+                                .frame(height: 7)
+                            HStack(spacing: 4) {
+                                RoundedRectangle(cornerRadius: 2)
+                                    .fill(Color.primary.opacity(0.08))
+                                    .frame(width: 18)
+                                VStack(spacing: 3) {
+                                    ForEach(0..<4, id: \.self) { line in
+                                        RoundedRectangle(cornerRadius: 1)
+                                            .fill(Color.primary.opacity(line == 0 ? 0.18 : 0.10))
+                                            .frame(height: 3)
+                                    }
+                                    Spacer(minLength: 0)
+                                }
+                            }
+                            .padding(.horizontal, 5)
+                            .padding(.bottom, 5)
+                        }
+                        .padding(4)
+                    }
             }
             .padding(6)
             .frame(width: previewTileWidth, height: 100)
             .background(index == 0 ? Color.accentColor.opacity(0.16) : Color.primary.opacity(0.04))
             .overlay {
                 RoundedRectangle(cornerRadius: 9)
-                    .stroke(index == 0 ? Color.accentColor : .clear, lineWidth: 2)
+                    .stroke(index == 0 ? Color.accentColor : .clear, lineWidth: 3)
             }
+            .clipShape(RoundedRectangle(cornerRadius: 9))
         case .appIcons:
             VStack(spacing: 7) {
                 Image(systemName: symbols[index]).font(.system(size: 34))
@@ -271,11 +309,11 @@ private struct AppearancePreview: View {
     private var background: some ShapeStyle {
         switch theme {
         case .system:
-            AnyShapeStyle(.ultraThinMaterial.opacity(opacity))
+            AnyShapeStyle(Color(nsColor: .windowBackgroundColor))
         case .light:
-            AnyShapeStyle(Color.white.opacity(opacity))
+            AnyShapeStyle(Color.white)
         case .dark:
-            AnyShapeStyle(Color.black.opacity(opacity))
+            AnyShapeStyle(Color.black)
         }
     }
 
@@ -306,7 +344,11 @@ private struct ControlsSettingsView: View {
             Section("Window switcher") {
                 LabeledContent("Shortcut") {
                     HStack {
-                        ShortcutRecorderView(shortcut: model.settings.shortcut) {
+                        ShortcutKeycaps(shortcut: model.settings.shortcut)
+                        ShortcutRecorderView(
+                            shortcut: model.settings.shortcut,
+                            restingLabel: String(localized: "Change…")
+                        ) {
                             model.updateShortcut($0)
                         }
                         Button("Reset") {
@@ -323,52 +365,203 @@ private struct ControlsSettingsView: View {
 
             Section("While switching") {
                 keyboardRow(
-                    keyLabel: Text(verbatim: "⇧"),
-                    action: "Move backward"
+                    keyLabel: "⇥",
+                    action: "Move forward",
+                    accessibilityDescription: "Tab, Move forward"
+                )
+                LabeledContent("Move backward") {
+                    Picker(
+                        "Move backward",
+                        selection: reverseControlSelection
+                    ) {
+                        Text("Shift + Tab").tag(ReverseControlChoice.shiftTab)
+                        Text("Shift only").tag(ReverseControlChoice.shiftOnly)
+                        Text("Custom key").tag(ReverseControlChoice.customKey)
+                    }
+                    .labelsHidden()
+                    .frame(width: 170)
+                }
+                if case let .key(keyCode) = model.settings.reverseControl {
+                    LabeledContent("Custom reverse key") {
+                        ShortcutRecorderView(
+                            shortcut: ShortcutDefinition(
+                                keyCode: keyCode,
+                                modifiers: []
+                            )
+                        ) { definition in
+                            if let keyCode = definition.keyCode {
+                                model.updateReverseControl(.key(keyCode))
+                            }
+                        }
+                        .frame(width: 120)
+                    }
+                }
+                if let message = model.reverseControlValidationMessage {
+                    Label(message, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+                keyboardRow(
+                    keyLabel: reverseKeyLabel,
+                    action: "Move backward",
+                    accessibilityDescription: "Configured reverse control, Move backward"
                 )
                 keyboardRow(
-                    keyLabel: Text(verbatim: "⎋"),
-                    action: "Cancel"
+                    keyLabel: "⎋",
+                    action: "Cancel",
+                    accessibilityDescription: "Escape, Cancel"
                 )
                 keyboardRow(
-                    keyLabel: Text(verbatim: "⌫"),
-                    action: "Close selected window"
+                    keyLabel: "⌫",
+                    action: "Close selected window",
+                    accessibilityDescription: "Delete, Close selected window"
                 )
                 keyboardRow(
-                    keyLabel: Text("Release modifier"),
-                    action: "Activate selected window"
+                    keyLabel: "Release modifier",
+                    action: "Activate selected window",
+                    accessibilityDescription:
+                        "Release modifier, Activate selected window"
                 )
+
+                LabeledContent("Hold-to-cycle speed") {
+                    HStack {
+                        Slider(
+                            value: model.binding(\.holdCycleSpeed),
+                            in: 0.5 ... 2.0,
+                            step: 0.1
+                        )
+                        .frame(width: 190)
+                        Text(model.settings.holdCycleSpeed, format: .number.precision(.fractionLength(1)))
+                            .monospacedDigit()
+                        Text("×")
+                    }
+                }
             }
         }
         .formStyle(.grouped)
     }
 
+    private enum ReverseControlChoice: Hashable {
+        case shiftTab
+        case shiftOnly
+        case customKey
+    }
+
+    private var reverseControlSelection: Binding<ReverseControlChoice> {
+        Binding(
+            get: {
+                switch model.settings.reverseControl {
+                case .shiftWithForwardKey: .shiftTab
+                case .shiftOnly: .shiftOnly
+                case .key: .customKey
+                }
+            },
+            set: { choice in
+                switch choice {
+                case .shiftTab:
+                    model.updateReverseControl(.shiftWithForwardKey)
+                case .shiftOnly:
+                    model.updateReverseControl(.shiftOnly)
+                case .customKey:
+                    model.updateReverseControl(.key(15))
+                }
+            }
+        )
+    }
+
+    private var reverseKeyLabel: LocalizedStringKey {
+        switch model.settings.reverseControl {
+        case .shiftWithForwardKey: "⇧ + ⇥"
+        case .shiftOnly: "⇧"
+        case .key: "Custom key"
+        }
+    }
+
     private func keyboardRow(
-        keyLabel: Text,
-        action: LocalizedStringKey
+        keyLabel: LocalizedStringKey,
+        action: LocalizedStringKey,
+        accessibilityDescription: LocalizedStringKey
     ) -> some View {
         LabeledContent {
             Text(action).foregroundStyle(.secondary)
         } label: {
-            keyLabel
+            Text(keyLabel)
                 .font(.system(.body, design: .monospaced, weight: .semibold))
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(accessibilityDescription))
+    }
+}
+
+private struct ShortcutKeycaps: View {
+    let shortcut: ShortcutDefinition
+
+    var body: some View {
+        HStack(spacing: 5) {
+            ForEach(labels.indices, id: \.self) { index in
+                if index > 0 {
+                    Text("+").foregroundStyle(.secondary)
+                }
+                Text(labels[index])
+                    .font(.system(.body, design: .rounded, weight: .semibold))
+                    .padding(.horizontal, 8)
+                    .frame(minHeight: 27)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(.separator, lineWidth: 1)
+                    }
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(ShortcutRecorderView.displayString(shortcut))
+    }
+
+    private var labels: [String] {
+        var result: [String] = []
+        if shortcut.modifiers.contains(.control) { result.append("⌃") }
+        if shortcut.modifiers.contains(.option) { result.append("⌥") }
+        if shortcut.modifiers.contains(.command) { result.append("⌘") }
+        let full = ShortcutRecorderView.displayString(shortcut)
+        let modifiers = result.joined()
+        result.append(String(full.dropFirst(modifiers.count)))
+        return result
     }
 }
 
 private struct FilteringSettingsView: View {
     @ObservedObject var model: SettingsViewModel
+    @State private var showsAdvanced = false
 
     var body: some View {
         Form {
             Section("Scope") {
-                Picker("Spaces", selection: model.binding(\.spaceScope)) {
-                    Text("All Spaces").tag(SpaceScope.allSpaces)
-                    Text("Visible Spaces").tag(SpaceScope.visibleSpaces)
+                Picker("Show windows from", selection: scopePreset) {
+                    Text("Everywhere").tag(ScopePreset.everywhere)
+                    Text("Visible now").tag(ScopePreset.visibleNow)
+                    Text("Pointer display").tag(ScopePreset.pointerDisplay)
+                    if currentScopePreset == .custom {
+                        Text("Custom").tag(ScopePreset.custom)
+                    }
                 }
-                Picker("Screens", selection: model.binding(\.screenScope)) {
-                    Text("All Screens").tag(ScreenScope.allScreens)
-                    Text("Pointer Screen").tag(ScreenScope.pointerScreen)
+                Text("macOS calls virtual desktops “Spaces.” Everywhere includes every desktop and display.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if let warning = model.compatibilityWarning {
+                    Label(warning, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+
+                DisclosureGroup("Advanced", isExpanded: $showsAdvanced) {
+                    Picker("Desktops", selection: model.binding(\.spaceScope)) {
+                        Text("Every desktop").tag(SpaceScope.allSpaces)
+                        Text("Desktops visible now").tag(SpaceScope.visibleSpaces)
+                    }
+                    Picker("Displays", selection: model.binding(\.screenScope)) {
+                        Text("Every display").tag(ScreenScope.allScreens)
+                        Text("Display containing pointer").tag(ScreenScope.pointerScreen)
+                    }
                 }
             }
 
@@ -387,6 +580,23 @@ private struct FilteringSettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var currentScopePreset: ScopePreset {
+        ScopePreset(
+            spaceScope: model.settings.spaceScope,
+            screenScope: model.settings.screenScope
+        )
+    }
+
+    private var scopePreset: Binding<ScopePreset> {
+        Binding(
+            get: { currentScopePreset },
+            set: { preset in
+                guard let scopes = preset.scopes else { return }
+                model.updateScope(space: scopes.space, screen: scopes.screen)
+            }
+        )
     }
 }
 
@@ -526,6 +736,13 @@ private struct GeneralSettingsView: View {
             Section("Permissions") {
                 statusRow("Accessibility", granted: model.accessibilityGranted)
                 statusRow("Thumbnail previews", granted: model.screenRecordingGranted)
+#if DEBUG
+                if !model.accessibilityGranted {
+                    Text("Debug build: if macOS still shows Tab‑List as enabled, quit Tab‑List, run Scripts/reset_debug_accessibility.sh, relaunch, and grant Accessibility again.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+#endif
                 HStack {
                     Button("Open Permissions…") { model.onOpenPermissions?() }
                     if !model.accessibilityGranted {

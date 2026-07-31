@@ -11,7 +11,7 @@ struct SettingsTests {
         XCTAssertEqual(settings.presentation, .thumbnails)
         XCTAssertEqual(settings.panelSize, .auto)
         XCTAssertEqual(settings.theme, .system)
-        XCTAssertEqual(settings.opacity, 0.88, accuracy: 0.000_1)
+        XCTAssertEqual(settings.opacity, 1.0, accuracy: 0.000_1)
         XCTAssertEqual(settings.shortcut, .commandTab)
         XCTAssertEqual(settings.spaceScope, .allSpaces)
         XCTAssertEqual(settings.screenScope, .allScreens)
@@ -22,12 +22,14 @@ struct SettingsTests {
         XCTAssertFalse(settings.refreshThumbnailsInBackground)
         XCTAssertTrue(settings.showMenuBarIcon)
         XCTAssertTrue(settings.automaticallyChecksForUpdates)
+        XCTAssertEqual(settings.reverseControl, .shiftWithForwardKey)
+        XCTAssertEqual(settings.holdCycleSpeed, 1.0)
     }
 
     @Test
-    func testNormalizationClampsOpacityAndCleansExclusions() {
+    func testNormalizationMigratesLegacyOpacityAndCleansExclusions() {
         var settings = SettingsV1.default
-        settings.opacity = 2
+        settings.opacity = 0.72
         settings.excludedBundleIdentifiers = ["", "  ", " com.example.App "]
 
         let normalized = settings.normalized()
@@ -46,6 +48,42 @@ struct SettingsTests {
 
         XCTAssertEqual(normalized.opacity, SettingsV1.default.opacity)
         XCTAssertEqual(normalized.shortcut, .commandTab)
+    }
+
+    @Test
+    func testHoldCycleSpeedIsClampedAndNonFiniteValueUsesDefault() {
+        var settings = SettingsV1.default
+        settings.holdCycleSpeed = 8
+        XCTAssertEqual(settings.normalized().holdCycleSpeed, 2)
+
+        settings.holdCycleSpeed = 0.1
+        XCTAssertEqual(settings.normalized().holdCycleSpeed, 0.5)
+
+        settings.holdCycleSpeed = .infinity
+        XCTAssertEqual(settings.normalized().holdCycleSpeed, 1)
+    }
+
+    @Test
+    func testScopePresetMappingsAreDeterministic() {
+        XCTAssertEqual(
+            ScopePreset(spaceScope: .allSpaces, screenScope: .allScreens),
+            .everywhere
+        )
+        XCTAssertEqual(
+            ScopePreset(spaceScope: .visibleSpaces, screenScope: .allScreens),
+            .visibleNow
+        )
+        XCTAssertEqual(
+            ScopePreset(
+                spaceScope: .visibleSpaces,
+                screenScope: .pointerScreen
+            ),
+            .pointerDisplay
+        )
+        XCTAssertEqual(
+            ScopePreset(spaceScope: .allSpaces, screenScope: .pointerScreen),
+            .custom
+        )
     }
 
     @Test
@@ -72,8 +110,8 @@ struct SettingsTests {
         let data = try SettingsPersistence.encode(settings)
         let decoded = try SettingsPersistence.decode(data)
 
-        XCTAssertEqual(decoded.settings, settings)
-        XCTAssertEqual(decoded.source, .versioned(schemaVersion: 1))
+        XCTAssertEqual(decoded.settings, settings.normalized())
+        XCTAssertEqual(decoded.source, .versioned(schemaVersion: 2))
     }
 
     @Test
@@ -86,6 +124,31 @@ struct SettingsTests {
 
         XCTAssertEqual(decoded.settings, settings)
         XCTAssertEqual(decoded.source, .legacyUnversioned)
+    }
+
+    @Test
+    func testVersionOneEnvelopeMigratesNewControlsToDefaults() throws {
+        let encoded = try JSONEncoder().encode(
+            PersistedSettingsEnvelope(settings: .default)
+        )
+        var envelope = try #require(
+            JSONSerialization.jsonObject(with: encoded)
+                as? [String: Any]
+        )
+        envelope["schemaVersion"] = 1
+        var settings = try #require(
+            envelope["settings"] as? [String: Any]
+        )
+        settings.removeValue(forKey: "reverseControl")
+        settings.removeValue(forKey: "holdCycleSpeed")
+        envelope["settings"] = settings
+        let legacyData = try JSONSerialization.data(withJSONObject: envelope)
+
+        let decoded = try SettingsPersistence.decode(legacyData)
+
+        XCTAssertEqual(decoded.source, .versioned(schemaVersion: 1))
+        XCTAssertEqual(decoded.settings.reverseControl, .shiftWithForwardKey)
+        XCTAssertEqual(decoded.settings.holdCycleSpeed, 1)
     }
 
     @Test

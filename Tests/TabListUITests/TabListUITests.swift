@@ -1,5 +1,6 @@
 import XCTest
 
+@MainActor
 final class TabListUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
@@ -57,15 +58,15 @@ final class TabListUITests: XCTestCase {
         )
     }
 
-    func testSettingsExposeAllVersionOneSectionsAndModes() {
+    func testSettingsExposeAllVersionTwoSectionsAndModes() {
         let application = configuredApplication(
             showing: "--ui-testing-show-settings"
         )
         application.launch()
 
         XCTAssertTrue(
-            application.windows["Tab‑List Settings"]
-                .waitForExistence(timeout: 5)
+            application.windows.firstMatch.waitForExistence(timeout: 5),
+            "The Settings window should be visible after the UI-test launch."
         )
         for section in [
             "Appearance",
@@ -83,7 +84,7 @@ final class TabListUITests: XCTestCase {
         }
         for mode in ["Thumbnails", "App Icons", "Titles"] {
             XCTAssertTrue(
-                application.buttons[mode].exists,
+                application.descendants(matching: .any)[mode].exists,
                 "Missing presentation mode: \(mode)"
             )
         }

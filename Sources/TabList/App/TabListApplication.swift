@@ -468,6 +468,10 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
             settingsModel.replaceSettingsWithoutNotification(committed)
         }
         settingsStore.update(committed)
+        shortcutService.configureSessionControls(
+            reverseControl: committed.reverseControl,
+            holdCycleSpeed: committed.holdCycleSpeed
+        )
         updateCompatibilityWarning()
 
         menuBar.setVisible(committed.showMenuBarIcon)
@@ -478,7 +482,6 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
         if previous.presentation != committed.presentation
             || previous.panelSize != committed.panelSize
             || previous.theme != committed.theme
-            || previous.opacity != committed.opacity
         {
             session.presentationSettingsChanged()
         }
@@ -509,6 +512,11 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
             return permissions.accessibility == .authorized
         }
         do {
+            let controls = settingsStore.settings
+            shortcutService.configureSessionControls(
+                reverseControl: controls.reverseControl,
+                holdCycleSpeed: controls.holdCycleSpeed
+            )
             try shortcutService.register(shortcut) { [weak self] command in
                 self?.session.handle(command)
             }

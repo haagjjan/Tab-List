@@ -6,7 +6,7 @@ import TabListCore
 
 public enum ShortcutInputCommand: Equatable, Sendable {
     case begin(reverse: Bool)
-    case cycle(reverse: Bool)
+    case cycle(reverse: Bool, isRepeat: Bool)
     case commit
     case cancel
     case closeSelectedWindow
@@ -17,6 +17,126 @@ public enum GlobalShortcutError: Error, Equatable, Sendable {
     case registrationConflict(OSStatus)
     case eventTapUnavailable
     case eventTapStartupTimedOut
+}
+
+struct ShortcutEventOutcome: Equatable, Sendable {
+    let command: ShortcutInputCommand?
+    let consumesEvent: Bool
+    let sessionActive: Bool
+}
+
+enum HoldCycleTiming {
+    static func repeatInterval(
+        systemInterval: TimeInterval,
+        speed: Double
+    ) -> TimeInterval {
+        let safeSystemInterval = max(0.02, systemInterval)
+        let safeSpeed = min(max(speed.isFinite ? speed : 1, 0.5), 2.0)
+        return max(0.02, safeSystemInterval / safeSpeed)
+    }
+}
+
+/// Pure event interpretation shared by the live event tap and regression
+/// tests. Shift is a direction modifier; the configured trigger key still
+/// performs the step.
+enum ShortcutEventInterpreter {
+    static func consumesKeyUp(
+        keyCode: UInt16,
+        shortcut: ShortcutDefinition,
+        reverseControl: ReverseControlDefinition,
+        sessionActive: Bool
+    ) -> Bool {
+        guard sessionActive else { return false }
+        if Int(keyCode) == kVK_Delete || Int(keyCode) == kVK_ForwardDelete {
+            return true
+        }
+        if keyCode == shortcut.keyCode { return true }
+        if case let .key(reverseKeyCode) = reverseControl {
+            return keyCode == reverseKeyCode
+        }
+        return reverseControl == .shiftOnly && Int(keyCode) == kVK_Shift
+    }
+
+    static func keyDown(
+        keyCode: UInt16,
+        heldModifiers: ShortcutModifiers,
+        shortcut: ShortcutDefinition,
+        sessionActive: Bool,
+        isRepeat: Bool = false
+    ) -> ShortcutEventOutcome {
+        if sessionActive {
+            switch Int(keyCode) {
+            case kVK_Escape:
+                return ShortcutEventOutcome(
+                    command: .cancel,
+                    consumesEvent: true,
+                    sessionActive: false
+                )
+            case kVK_Delete, kVK_ForwardDelete:
+                return ShortcutEventOutcome(
+                    command: .closeSelectedWindow,
+                    consumesEvent: true,
+                    sessionActive: true
+                )
+            default:
+                break
+            }
+        }
+
+        guard keyCode == shortcut.keyCode else {
+            return ShortcutEventOutcome(
+                command: nil,
+                consumesEvent: false,
+                sessionActive: sessionActive
+            )
+        }
+
+        let required = shortcut.modifiers.subtracting(.shift)
+        let heldNonShift = heldModifiers.intersection(.nonShift)
+        guard heldNonShift == required.intersection(.nonShift) else {
+            return ShortcutEventOutcome(
+                command: nil,
+                consumesEvent: false,
+                sessionActive: sessionActive
+            )
+        }
+
+        let reverse = heldModifiers.contains(.shift)
+        return ShortcutEventOutcome(
+            command: sessionActive
+                ? .cycle(reverse: reverse, isRepeat: isRepeat)
+                : .begin(reverse: reverse),
+            consumesEvent: true,
+            sessionActive: true
+        )
+    }
+
+    static func modifiersChanged(
+        heldModifiers: ShortcutModifiers,
+        shortcut: ShortcutDefinition,
+        sessionActive: Bool
+    ) -> ShortcutEventOutcome {
+        guard sessionActive else {
+            return ShortcutEventOutcome(
+                command: nil,
+                consumesEvent: false,
+                sessionActive: false
+            )
+        }
+        let required = shortcut.modifiers.subtracting(.shift)
+        guard heldModifiers.isSuperset(of: required) else {
+            return ShortcutEventOutcome(
+                command: .commit,
+                consumesEvent: false,
+                sessionActive: false
+            )
+        }
+        return ShortcutEventOutcome(
+            command: nil,
+            consumesEvent: false,
+            sessionActive: true
+        )
+    }
 }
 
 private final class ShortcutCallbackBox: @unchecked Sendable {
@@ -54,7 +174,15 @@ private final class EventTapContext: @unchecked Sendable {
     private let callbackBox: ShortcutCallbackBox
 
     private var shortcut: ShortcutDefinition
+    private var reverseControl: ReverseControlDefinition
+    private var holdCycleSpeed: Double
+    private let systemInitialRepeatDelay: TimeInterval
+    private let systemRepeatInterval: TimeInterval
     private var sessionActive = false
+    private var previousModifiers: ShortcutModifiers = []
+    private var pressedCycleKey: UInt16?
+    private var repeatDirectionIsReverse = false
+    private var repeatTimer: DispatchSourceTimer?
     private var tap: CFMachPort?
     private var runLoop: CFRunLoop?
     private var runLoopSource: CFRunLoopSource?
@@ -63,9 +191,17 @@ private final class EventTapContext: @unchecked Sendable {
 
     init(
         shortcut: ShortcutDefinition,
+        reverseControl: ReverseControlDefinition,
+        holdCycleSpeed: Double,
+        systemInitialRepeatDelay: TimeInterval,
+        systemRepeatInterval: TimeInterval,
         callbackBox: ShortcutCallbackBox
     ) {
         self.shortcut = shortcut
+        self.reverseControl = reverseControl
+        self.holdCycleSpeed = holdCycleSpeed
+        self.systemInitialRepeatDelay = systemInitialRepeatDelay
+        self.systemRepeatInterval = systemRepeatInterval
         self.callbackBox = callbackBox
     }
 
@@ -81,6 +217,7 @@ private final class EventTapContext: @unchecked Sendable {
         let thread = Thread { [self] in
             let mask =
                 CGEventMask(1 << CGEventType.keyDown.rawValue)
+                | CGEventMask(1 << CGEventType.keyUp.rawValue)
                 | CGEventMask(1 << CGEventType.flagsChanged.rawValue)
                 | CGEventMask(1 << CGEventType.tapDisabledByTimeout.rawValue)
                 | CGEventMask(1 << CGEventType.tapDisabledByUserInput.rawValue)
@@ -171,6 +308,7 @@ private final class EventTapContext: @unchecked Sendable {
         runLoopSource = nil
         thread = nil
         sessionActive = false
+        stopRepeatLocked()
         lock.unlock()
 
         if let localTap {
@@ -190,9 +328,22 @@ private final class EventTapContext: @unchecked Sendable {
         lock.unlock()
     }
 
+    func updateSessionControls(
+        reverseControl: ReverseControlDefinition,
+        holdCycleSpeed: Double
+    ) {
+        lock.lock()
+        self.reverseControl = reverseControl
+        self.holdCycleSpeed = min(max(holdCycleSpeed, 0.5), 2.0)
+        lock.unlock()
+    }
+
     func setSessionActive(_ active: Bool) {
         lock.lock()
         sessionActive = active
+        if !active {
+            stopRepeatLocked()
+        }
         lock.unlock()
     }
 
@@ -203,10 +354,16 @@ private final class EventTapContext: @unchecked Sendable {
             return
         }
         sessionActive = true
+        let configuredReverseControl = reverseControl
         lock.unlock()
-        let reverse = CGEventSource.flagsState(
-            .combinedSessionState
-        ).contains(.maskShift)
+        // Carbon is only a recovery path when the event tap is unavailable.
+        // Shift changes the initial direction only for Shift+forward mode;
+        // custom and Shift-only bindings are handled explicitly while a
+        // session is active and must not alter the forward trigger.
+        let reverse = configuredReverseControl == .shiftWithForwardKey
+            && CGEventSource.flagsState(
+                .combinedSessionState
+            ).contains(.maskShift)
         callbackBox.deliver(.begin(reverse: reverse))
     }
 
@@ -216,6 +373,7 @@ private final class EventTapContext: @unchecked Sendable {
             let localTap = tap
             let wasActive = sessionActive
             sessionActive = false
+            stopRepeatLocked()
             lock.unlock()
             if let localTap {
                 CGEvent.tapEnable(tap: localTap, enable: true)
@@ -228,61 +386,179 @@ private final class EventTapContext: @unchecked Sendable {
 
         lock.lock()
         let configuredShortcut = shortcut
+        let configuredReverseControl = reverseControl
         let active = sessionActive
+        let priorModifiers = previousModifiers
+        let heldModifiers = modifiers(from: event.flags)
+        previousModifiers = heldModifiers
         lock.unlock()
 
         if type == .flagsChanged {
-            guard active else { return Unmanaged.passUnretained(event) }
-            let held = modifiers(from: event.flags)
-            let required = configuredShortcut.modifiers.subtracting(.shift)
-            if !held.isSuperset(of: required) {
-                setSessionActive(false)
-                callbackBox.deliver(.commit)
+            var consumedShiftOnlyTransition = false
+            if active,
+               configuredReverseControl == .shiftOnly {
+                let shiftWasHeld = priorModifiers.contains(.shift)
+                let shiftIsHeld = heldModifiers.contains(.shift)
+                if shiftIsHeld != shiftWasHeld {
+                    consumedShiftOnlyTransition = true
+                    if shiftIsHeld {
+                        callbackBox.deliver(
+                            .cycle(reverse: true, isRepeat: false)
+                        )
+                        beginRepeat(
+                            keyCode: UInt16(kVK_Shift),
+                            reverse: true
+                        )
+                    } else {
+                        endRepeat(keyCode: UInt16(kVK_Shift))
+                    }
+                }
             }
-            return Unmanaged.passUnretained(event)
+            let outcome = ShortcutEventInterpreter.modifiersChanged(
+                heldModifiers: heldModifiers,
+                shortcut: configuredShortcut,
+                sessionActive: active
+            )
+            if outcome.sessionActive != active {
+                setSessionActive(outcome.sessionActive)
+            }
+            if let command = outcome.command {
+                callbackBox.deliver(command)
+            }
+            return consumedShiftOnlyTransition
+                ? nil
+                : Unmanaged.passUnretained(event)
         }
 
-        guard type == .keyDown else {
+        guard type == .keyDown || type == .keyUp else {
             return Unmanaged.passUnretained(event)
         }
 
         let keyCode = UInt16(
             event.getIntegerValueField(.keyboardEventKeycode)
         )
-        let held = modifiers(from: event.flags)
+        if type == .keyUp {
+            let cycleRelease = isCycleKey(
+                keyCode,
+                shortcut: configuredShortcut,
+                reverseControl: configuredReverseControl
+            )
+            if cycleRelease {
+                endRepeat(keyCode: keyCode)
+            }
+            return ShortcutEventInterpreter.consumesKeyUp(
+                keyCode: keyCode,
+                shortcut: configuredShortcut,
+                reverseControl: configuredReverseControl,
+                sessionActive: active
+            )
+                ? nil
+                : Unmanaged.passUnretained(event)
+        }
 
-        if active {
-            switch keyCode {
-            case UInt16(kVK_Escape):
-                setSessionActive(false)
-                callbackBox.deliver(.cancel)
-                return nil
-            case UInt16(kVK_Delete), UInt16(kVK_ForwardDelete):
-                callbackBox.deliver(.closeSelectedWindow)
-                return nil
-            default:
+        let isAutorepeat = event.getIntegerValueField(
+            .keyboardEventAutorepeat
+        ) != 0
+        if active,
+           case let .key(reverseKeyCode) = configuredReverseControl,
+           keyCode == reverseKeyCode {
+            if !isAutorepeat {
+                callbackBox.deliver(
+                    .cycle(reverse: true, isRepeat: false)
+                )
+                beginRepeat(keyCode: keyCode, reverse: true)
+            }
+            return nil
+        }
+
+        let effectiveModifiers = configuredReverseControl
+            == .shiftWithForwardKey
+            ? heldModifiers
+            : heldModifiers.subtracting(.shift)
+        let outcome = ShortcutEventInterpreter.keyDown(
+            keyCode: keyCode,
+            heldModifiers: effectiveModifiers,
+            shortcut: configuredShortcut,
+            sessionActive: active,
+            isRepeat: false
+        )
+        if outcome.sessionActive != active {
+            setSessionActive(outcome.sessionActive)
+        }
+        if let command = outcome.command, !isAutorepeat {
+            callbackBox.deliver(command)
+            switch command {
+            case let .begin(reverse), let .cycle(reverse, _):
+                beginRepeat(keyCode: keyCode, reverse: reverse)
+            case .commit, .cancel, .closeSelectedWindow:
                 break
             }
         }
+        return outcome.consumesEvent
+            ? nil
+            : Unmanaged.passUnretained(event)
+    }
 
-        guard keyCode == configuredShortcut.keyCode else {
-            return Unmanaged.passUnretained(event)
+    private func isCycleKey(
+        _ keyCode: UInt16,
+        shortcut: ShortcutDefinition,
+        reverseControl: ReverseControlDefinition
+    ) -> Bool {
+        if keyCode == shortcut.keyCode { return true }
+        if case let .key(reverseKeyCode) = reverseControl {
+            return keyCode == reverseKeyCode
         }
+        return reverseControl == .shiftOnly && Int(keyCode) == kVK_Shift
+    }
 
-        let required = configuredShortcut.modifiers.subtracting(.shift)
-        let heldNonShift = held.intersection(.nonShift)
-        guard heldNonShift == required.intersection(.nonShift) else {
-            return Unmanaged.passUnretained(event)
+    private func beginRepeat(keyCode: UInt16, reverse: Bool) {
+        lock.lock()
+        stopRepeatLocked()
+        pressedCycleKey = keyCode
+        repeatDirectionIsReverse = reverse
+        let speed = holdCycleSpeed
+        let timer = DispatchSource.makeTimerSource(
+            queue: DispatchQueue.global(qos: .userInteractive)
+        )
+        timer.schedule(
+            deadline: .now() + systemInitialRepeatDelay,
+            repeating: HoldCycleTiming.repeatInterval(
+                systemInterval: systemRepeatInterval,
+                speed: speed
+            ),
+            leeway: .milliseconds(2)
+        )
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            let shouldDeliver = self.sessionActive
+                && self.pressedCycleKey == keyCode
+            let reverse = self.repeatDirectionIsReverse
+            self.lock.unlock()
+            if shouldDeliver {
+                self.callbackBox.deliver(
+                    .cycle(reverse: reverse, isRepeat: true)
+                )
+            }
         }
+        repeatTimer = timer
+        timer.resume()
+        lock.unlock()
+    }
 
-        let reverse = held.contains(.shift)
-        if active {
-            callbackBox.deliver(.cycle(reverse: reverse))
-        } else {
-            setSessionActive(true)
-            callbackBox.deliver(.begin(reverse: reverse))
+    private func endRepeat(keyCode: UInt16) {
+        lock.lock()
+        if pressedCycleKey == keyCode {
+            stopRepeatLocked()
         }
-        return nil
+        lock.unlock()
+    }
+
+    private func stopRepeatLocked() {
+        repeatTimer?.setEventHandler {}
+        repeatTimer?.cancel()
+        repeatTimer = nil
+        pressedCycleKey = nil
     }
 
     private func modifiers(from flags: CGEventFlags) -> ShortcutModifiers {
@@ -316,6 +592,9 @@ public final class GlobalShortcutService {
     private var callbackBox: ShortcutCallbackBox?
     private var eventTapContext: EventTapContext?
     private(set) public var registeredShortcut: ShortcutDefinition?
+    private var reverseControl: ReverseControlDefinition =
+        .shiftWithForwardKey
+    private var holdCycleSpeed = 1.0
 
     public init() {}
 
@@ -337,6 +616,10 @@ public final class GlobalShortcutService {
         let newBox = ShortcutCallbackBox(callback: handler)
         let newTapContext = EventTapContext(
             shortcut: shortcut,
+            reverseControl: reverseControl,
+            holdCycleSpeed: holdCycleSpeed,
+            systemInitialRepeatDelay: NSEvent.keyRepeatDelay,
+            systemRepeatInterval: NSEvent.keyRepeatInterval,
             callbackBox: newBox
         )
         var newEventHandler: EventHandlerRef?
@@ -411,6 +694,18 @@ public final class GlobalShortcutService {
 
     public func setSessionActive(_ active: Bool) {
         eventTapContext?.setSessionActive(active)
+    }
+
+    public func configureSessionControls(
+        reverseControl: ReverseControlDefinition,
+        holdCycleSpeed: Double
+    ) {
+        self.reverseControl = reverseControl
+        self.holdCycleSpeed = min(max(holdCycleSpeed, 0.5), 2.0)
+        eventTapContext?.updateSessionControls(
+            reverseControl: reverseControl,
+            holdCycleSpeed: self.holdCycleSpeed
+        )
     }
 
     /// Recreates the event tap after wake/unlock. If recreation fails, the

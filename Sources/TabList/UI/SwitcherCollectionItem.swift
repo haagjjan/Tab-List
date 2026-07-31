@@ -4,6 +4,25 @@ import TabListCore
 @MainActor
 private final class SwitcherItemRootView: NSView {
     var pressHandler: (() -> Void)?
+    weak var actionControl: NSView?
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if let actionControl {
+            let controlPoint = actionControl.convert(point, from: self)
+            if actionControl.bounds.contains(controlPoint) {
+                return actionControl.hitTest(controlPoint)
+            }
+        }
+        return bounds.contains(point) ? self : nil
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard bounds.contains(point) else { return }
+        pressHandler?()
+    }
 
     override func accessibilityPerformPress() -> Bool {
         guard let pressHandler else { return false }
@@ -22,7 +41,11 @@ final class SwitcherCollectionItem: NSCollectionViewItem {
     private let appNameLabel = NSTextField(labelWithString: "")
     private let titleLabel = NSTextField(labelWithString: "")
     private let stateLabel = NSTextField(labelWithString: "")
+    private let previewUnavailableLabel = NSTextField(
+        labelWithString: String(localized: "Preview unavailable")
+    )
     private let closeButton = NSButton()
+    private let actionProgress = NSProgressIndicator()
 
     private var representedSwitcherItem: SwitcherDisplayItem?
     private var presentation: PresentationMode = .thumbnails
@@ -70,6 +93,11 @@ final class SwitcherCollectionItem: NSCollectionViewItem {
         stateLabel.lineBreakMode = .byTruncatingTail
         stateLabel.translatesAutoresizingMaskIntoConstraints = false
 
+        previewUnavailableLabel.font = .systemFont(ofSize: 11)
+        previewUnavailableLabel.textColor = .secondaryLabelColor
+        previewUnavailableLabel.alignment = .center
+        previewUnavailableLabel.translatesAutoresizingMaskIntoConstraints = false
+
         closeButton.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: String(localized: "Close window"))
         closeButton.imagePosition = .imageOnly
         closeButton.isBordered = false
@@ -81,20 +109,21 @@ final class SwitcherCollectionItem: NSCollectionViewItem {
         closeButton.setAccessibilityLabel(String(localized: "Close window"))
         closeButton.translatesAutoresizingMaskIntoConstraints = false
 
-        let clickRecognizer = NSClickGestureRecognizer(
-            target: self,
-            action: #selector(itemPressed(_:))
-        )
-        clickRecognizer.delaysPrimaryMouseButtonEvents = false
-        view.addGestureRecognizer(clickRecognizer)
-
         view.addSubview(selectionView)
         selectionView.addSubview(previewImageView)
         selectionView.addSubview(appIconImageView)
         selectionView.addSubview(appNameLabel)
         selectionView.addSubview(titleLabel)
         selectionView.addSubview(stateLabel)
+        selectionView.addSubview(previewUnavailableLabel)
         selectionView.addSubview(closeButton)
+        actionProgress.style = .spinning
+        actionProgress.controlSize = .small
+        actionProgress.isIndeterminate = true
+        actionProgress.isHidden = true
+        actionProgress.translatesAutoresizingMaskIntoConstraints = false
+        selectionView.addSubview(actionProgress)
+        (view as? SwitcherItemRootView)?.actionControl = closeButton
 
         NSLayoutConstraint.activate([
             selectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -106,6 +135,23 @@ final class SwitcherCollectionItem: NSCollectionViewItem {
             closeButton.heightAnchor.constraint(equalToConstant: 24),
             closeButton.topAnchor.constraint(equalTo: selectionView.topAnchor, constant: 6),
             closeButton.trailingAnchor.constraint(equalTo: selectionView.trailingAnchor, constant: -6)
+            ,
+            actionProgress.centerXAnchor.constraint(equalTo: closeButton.centerXAnchor),
+            actionProgress.centerYAnchor.constraint(equalTo: closeButton.centerYAnchor),
+            actionProgress.widthAnchor.constraint(equalToConstant: 16),
+            actionProgress.heightAnchor.constraint(equalToConstant: 16),
+
+            previewUnavailableLabel.centerXAnchor.constraint(
+                equalTo: previewImageView.centerXAnchor
+            ),
+            previewUnavailableLabel.bottomAnchor.constraint(
+                equalTo: previewImageView.bottomAnchor,
+                constant: -12
+            ),
+            previewUnavailableLabel.widthAnchor.constraint(
+                lessThanOrEqualTo: previewImageView.widthAnchor,
+                constant: -16
+            )
         ])
 
         let area = NSTrackingArea(
@@ -139,6 +185,7 @@ final class SwitcherCollectionItem: NSCollectionViewItem {
         presentation: PresentationMode,
         position: Int,
         total: Int,
+        isActionPending: Bool,
         activateHandler: @escaping () -> Void,
         closeHandler: @escaping () -> Void
     ) {
@@ -175,21 +222,30 @@ final class SwitcherCollectionItem: NSCollectionViewItem {
                 previewImageView.image = item.icon
             }
             previewImageView.imageScaling = item.thumbnail == nil ? .scaleProportionallyDown : .scaleProportionallyUpOrDown
+            previewUnavailableLabel.isHidden = item.thumbnail != nil
         case .appIcons:
             appIconImageView.isHidden = true
             previewImageView.image = item.icon
             previewImageView.imageScaling = .scaleProportionallyDown
+            previewUnavailableLabel.isHidden = true
         case .titles:
             appIconImageView.isHidden = true
             previewImageView.image = item.icon
             previewImageView.imageScaling = .scaleProportionallyDown
+            previewUnavailableLabel.isHidden = true
         }
 
-        closeButton.isEnabled = item.window.isClosable
+        closeButton.isEnabled = item.window.isClosable && !isActionPending
         closeButton.toolTip = item.window.isClosable
             ? String(localized: "Close window")
             : String(localized: "This window cannot be closed by Tab‑List.")
-        closeButton.isHidden = true
+        closeButton.isHidden = isActionPending
+        actionProgress.isHidden = !isActionPending
+        if isActionPending {
+            actionProgress.startAnimation(nil)
+        } else {
+            actionProgress.stopAnimation(nil)
+        }
         view.setAccessibilityElement(true)
         view.setAccessibilityRole(.button)
         view.setAccessibilityLabel(
@@ -220,27 +276,38 @@ final class SwitcherCollectionItem: NSCollectionViewItem {
             NSLayoutConstraint.activate([
                 previewImageView.leadingAnchor.constraint(equalTo: selectionView.leadingAnchor, constant: 8),
                 previewImageView.trailingAnchor.constraint(equalTo: selectionView.trailingAnchor, constant: -8),
-                previewImageView.topAnchor.constraint(equalTo: selectionView.topAnchor, constant: 8),
-                previewImageView.bottomAnchor.constraint(equalTo: appNameLabel.topAnchor, constant: -7),
+                previewImageView.topAnchor.constraint(equalTo: selectionView.topAnchor, constant: 52),
+                previewImageView.bottomAnchor.constraint(equalTo: selectionView.bottomAnchor, constant: -8),
 
                 appIconImageView.leadingAnchor.constraint(
-                    equalTo: previewImageView.leadingAnchor,
-                    constant: 7
+                    equalTo: selectionView.leadingAnchor,
+                    constant: 10
                 ),
-                appIconImageView.bottomAnchor.constraint(
-                    equalTo: previewImageView.bottomAnchor,
-                    constant: -7
+                appIconImageView.topAnchor.constraint(
+                    equalTo: selectionView.topAnchor,
+                    constant: 10
                 ),
-                appIconImageView.widthAnchor.constraint(equalToConstant: 30),
-                appIconImageView.heightAnchor.constraint(equalToConstant: 30),
+                appIconImageView.widthAnchor.constraint(equalToConstant: 28),
+                appIconImageView.heightAnchor.constraint(equalToConstant: 28),
 
-                appNameLabel.leadingAnchor.constraint(equalTo: selectionView.leadingAnchor, constant: 10),
+                appNameLabel.leadingAnchor.constraint(
+                    equalTo: appIconImageView.trailingAnchor,
+                    constant: 8
+                ),
                 appNameLabel.trailingAnchor.constraint(lessThanOrEqualTo: closeButton.leadingAnchor, constant: -4),
-                appNameLabel.bottomAnchor.constraint(equalTo: titleLabel.topAnchor, constant: -1),
+                appNameLabel.topAnchor.constraint(
+                    equalTo: selectionView.topAnchor,
+                    constant: 8
+                ),
 
                 titleLabel.leadingAnchor.constraint(equalTo: appNameLabel.leadingAnchor),
-                titleLabel.trailingAnchor.constraint(equalTo: selectionView.trailingAnchor, constant: -10),
-                titleLabel.bottomAnchor.constraint(equalTo: selectionView.bottomAnchor, constant: -8),
+                titleLabel.trailingAnchor.constraint(
+                    lessThanOrEqualTo: closeButton.leadingAnchor,
+                    constant: -4
+                ),
+                titleLabel.topAnchor.constraint(
+                    equalTo: appNameLabel.bottomAnchor
+                ),
 
                 stateLabel.leadingAnchor.constraint(equalTo: previewImageView.leadingAnchor, constant: 6),
                 stateLabel.topAnchor.constraint(equalTo: previewImageView.topAnchor, constant: 6)
@@ -307,6 +374,10 @@ final class SwitcherCollectionItem: NSCollectionViewItem {
     }
 
     private func updateCloseButtonVisibility() {
+        guard actionProgress.isHidden else {
+            closeButton.isHidden = true
+            return
+        }
         closeButton.isHidden = !(isSelected || pointerInside)
     }
 
@@ -318,11 +389,4 @@ final class SwitcherCollectionItem: NSCollectionViewItem {
         closeHandler?()
     }
 
-    @objc private func itemPressed(_ recognizer: NSClickGestureRecognizer) {
-        let locationInCloseButton = recognizer.location(in: closeButton)
-        guard !closeButton.bounds.contains(locationInCloseButton) else {
-            return
-        }
-        activateHandler?()
-    }
 }

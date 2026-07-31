@@ -20,6 +20,7 @@ final class SettingsViewModel: ObservableObject {
     @Published var launchAtLoginRequiresApproval = false
     @Published var excludedApplications: [ExcludedApplication] = []
     @Published var shortcutValidationMessage: String?
+    @Published var reverseControlValidationMessage: String?
     @Published var compatibilityWarning: String?
 
     var onSettingsChanged: ((SettingsV1) -> Void)?
@@ -71,6 +72,30 @@ final class SettingsViewModel: ObservableObject {
                 shortcutValidationMessage = String(localized: "That shortcut is already used by macOS or another application.")
             }
         }
+    }
+
+    func updateReverseControl(_ reverseControl: ReverseControlDefinition) {
+        if case let .key(keyCode) = reverseControl {
+            let reserved = [UInt16(51), UInt16(53), UInt16(117)]
+            guard !reserved.contains(keyCode),
+                  keyCode != settings.shortcut.keyCode else {
+                reverseControlValidationMessage = String(
+                    localized: "Choose a key other than Tab, Escape, or Delete."
+                )
+                return
+            }
+        }
+        reverseControlValidationMessage = nil
+        var next = settings
+        next.reverseControl = reverseControl
+        apply(next)
+    }
+
+    func updateScope(space: SpaceScope, screen: ScreenScope) {
+        var next = settings
+        next.spaceScope = space
+        next.screenScope = screen
+        apply(next)
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {

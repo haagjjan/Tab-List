@@ -8,8 +8,11 @@ public struct PanelLayoutMetrics: Equatable, Sendable {
     public let panelSize: CGSize
     public let itemSize: CGSize
     public let previewSize: CGSize?
+    public let previewViewportSize: CGSize?
     public let columns: Int
     public let rows: Int
+    public let lastRowItemCount: Int
+    public let centersIncompleteFinalRow: Bool
     public let isScrollable: Bool
     public let outerPadding: CGFloat
     public let itemGap: CGFloat
@@ -24,8 +27,11 @@ public struct PanelLayoutMetrics: Equatable, Sendable {
         panelSize: CGSize,
         itemSize: CGSize,
         previewSize: CGSize?,
+        previewViewportSize: CGSize?,
         columns: Int,
         rows: Int,
+        lastRowItemCount: Int,
+        centersIncompleteFinalRow: Bool,
         isScrollable: Bool,
         outerPadding: CGFloat,
         itemGap: CGFloat,
@@ -39,8 +45,11 @@ public struct PanelLayoutMetrics: Equatable, Sendable {
         self.panelSize = panelSize
         self.itemSize = itemSize
         self.previewSize = previewSize
+        self.previewViewportSize = previewViewportSize
         self.columns = columns
         self.rows = rows
+        self.lastRowItemCount = lastRowItemCount
+        self.centersIncompleteFinalRow = centersIncompleteFinalRow
         self.isScrollable = isScrollable
         self.outerPadding = outerPadding
         self.itemGap = itemGap
@@ -92,6 +101,10 @@ public enum LayoutCalculator {
             return .small
         }
 
+        if presentation == .thumbnails {
+            return itemCount <= 3 ? .medium : .large
+        }
+
         for preset in [PanelSize.small, .medium, .large] {
             let candidate = fixedMetrics(
                 requestedPreset: .auto,
@@ -115,6 +128,15 @@ public enum LayoutCalculator {
         itemCount: Int
     ) -> PanelLayoutMetrics {
         precondition(resolvedPreset != .auto)
+
+        if presentation == .thumbnails {
+            return thumbnailMetrics(
+                requestedPreset: requestedPreset,
+                resolvedPreset: resolvedPreset,
+                displaySize: displaySize,
+                itemCount: itemCount
+            )
+        }
 
         let panelWidth = width(
             for: resolvedPreset,
@@ -147,8 +169,116 @@ public enum LayoutCalculator {
             panelSize: CGSize(width: panelWidth, height: panelHeight),
             itemSize: itemAndPreview.item,
             previewSize: itemAndPreview.preview,
+            previewViewportSize: itemAndPreview.preview,
             columns: columns,
             rows: rows,
+            lastRowItemCount: rows == 0
+                ? 0
+                : itemCount - ((rows - 1) * columns),
+            centersIncompleteFinalRow: presentation != .titles,
+            isScrollable: intrinsicHeight > maximumHeight,
+            outerPadding: outerPadding,
+            itemGap: itemGap,
+            panelCornerRadius: panelCornerRadius,
+            selectionCornerRadius: selectionCornerRadius,
+            closeControlHitSize: closeControlHitSize
+        )
+    }
+
+    private static func thumbnailMetrics(
+        requestedPreset: PanelSize,
+        resolvedPreset: PanelSize,
+        displaySize: CGSize,
+        itemCount: Int
+    ) -> PanelLayoutMetrics {
+        let maximumPanelWidth = width(
+            for: resolvedPreset,
+            displayWidth: displaySize.width
+        )
+        let targetCardWidth: CGFloat = switch resolvedPreset {
+        case .small: 240
+        case .medium: 300
+        case .large: 360
+        case .auto: 300
+        }
+        let minimumReadableCardWidth = min(
+            220,
+            max(1, maximumPanelWidth - (outerPadding * 2))
+        )
+        let maximumFittingColumns = max(
+            1,
+            Int(floor(
+                (maximumPanelWidth - (outerPadding * 2) + itemGap)
+                    / (minimumReadableCardWidth + itemGap)
+            ))
+        )
+
+        let desiredColumns: Int
+        switch itemCount {
+        case ...0:
+            desiredColumns = 1
+        case 1 ... 3:
+            desiredColumns = itemCount
+        case 4 ... 8:
+            desiredColumns = Int(ceil(Double(itemCount) / 2.0))
+        default:
+            desiredColumns = maximumFittingColumns
+        }
+        let columns = max(
+            1,
+            min(
+                min(maximumFittingColumns, desiredColumns),
+                max(itemCount, 1)
+            )
+        )
+        let availableCardWidth = (
+            maximumPanelWidth
+                - (outerPadding * 2)
+                - (CGFloat(columns - 1) * itemGap)
+        ) / CGFloat(columns)
+        let cardWidth = min(targetCardWidth, max(1, availableCardWidth))
+        let previewViewport = CGSize(
+            width: max(1, cardWidth - 16),
+            height: max(1, (cardWidth - 16) * 0.625)
+        )
+        let cardSize = CGSize(
+            width: cardWidth,
+            height: previewViewport.height + 60
+        )
+        let panelWidth = min(
+            maximumPanelWidth,
+            (outerPadding * 2)
+                + (CGFloat(columns) * cardWidth)
+                + (CGFloat(columns - 1) * itemGap)
+        )
+        let rows = itemCount == 0
+            ? 0
+            : Int(ceil(Double(itemCount) / Double(columns)))
+        let intrinsicHeight = intrinsicPanelHeight(
+            rows: rows,
+            itemHeight: cardSize.height
+        )
+        let maximumHeight = displaySize.height * maximumDisplayHeightRatio
+        let lastRowItemCount = rows == 0
+            ? 0
+            : itemCount - ((rows - 1) * columns)
+
+        return PanelLayoutMetrics(
+            requestedPreset: requestedPreset,
+            resolvedPreset: resolvedPreset,
+            presentation: .thumbnails,
+            panelSize: CGSize(
+                width: panelWidth,
+                height: min(intrinsicHeight, maximumHeight)
+            ),
+            itemSize: cardSize,
+            previewSize: previewViewport,
+            previewViewportSize: previewViewport,
+            columns: columns,
+            rows: rows,
+            lastRowItemCount: lastRowItemCount,
+            centersIncompleteFinalRow: lastRowItemCount > 0
+                && lastRowItemCount < columns,
             isScrollable: intrinsicHeight > maximumHeight,
             outerPadding: outerPadding,
             itemGap: itemGap,

@@ -18,7 +18,9 @@ final class SettingsStore {
             let decoded = try? SettingsPersistence.decode(data)
         {
             settings = decoded.settings
-            if decoded.source == .legacyUnversioned {
+            if decoded.source != .versioned(
+                schemaVersion: PersistedSettingsEnvelope.currentSchemaVersion
+            ) {
                 try? Self.persist(decoded.settings, to: defaults)
             }
         } else {

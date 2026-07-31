@@ -172,7 +172,7 @@ struct OnboardingView: View {
                     .foregroundStyle(.green)
                 Text("Tab‑List is ready")
                     .font(.title.bold())
-                Text("Press ⌘ Tab to switch windows. Hold Shift to move backward, press Escape to cancel, or Delete to close the selected window.")
+                Text("Press ⌘ Tab to switch windows. Press ⇧ Tab to move backward, press Escape to cancel, or Delete to close the selected window.")
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: 430)

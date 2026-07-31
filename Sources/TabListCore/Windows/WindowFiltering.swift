@@ -20,7 +20,7 @@ public enum WindowFilter {
         settings: SettingsV1,
         context: WindowFilterContext
     ) -> Bool {
-        guard window.isStandardWindow else {
+        guard window.isStandardWindow, window.isActionable else {
             return false
         }
 

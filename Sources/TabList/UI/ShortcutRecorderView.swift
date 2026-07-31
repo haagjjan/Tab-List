@@ -5,14 +5,25 @@ import TabListCore
 
 struct ShortcutRecorderView: NSViewRepresentable {
     let shortcut: ShortcutDefinition
+    var restingLabel: String?
     let onRecorded: (ShortcutDefinition) -> Void
 
+    init(
+        shortcut: ShortcutDefinition,
+        restingLabel: String? = nil,
+        onRecorded: @escaping (ShortcutDefinition) -> Void
+    ) {
+        self.shortcut = shortcut
+        self.restingLabel = restingLabel
+        self.onRecorded = onRecorded
+    }
+
     func makeCoordinator() -> Coordinator {
-        Coordinator(onRecorded: onRecorded)
+        Coordinator(onRecorded: onRecorded, restingLabel: restingLabel)
     }
 
     func makeNSView(context: Context) -> NSButton {
-        let button = NSButton(title: displayString(shortcut), target: context.coordinator, action: #selector(Coordinator.startRecording(_:)))
+        let button = NSButton(title: restingLabel ?? displayString(shortcut), target: context.coordinator, action: #selector(Coordinator.startRecording(_:)))
         button.bezelStyle = .rounded
         button.font = .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .medium)
         context.coordinator.button = button
@@ -21,8 +32,9 @@ struct ShortcutRecorderView: NSViewRepresentable {
 
     func updateNSView(_ button: NSButton, context: Context) {
         guard !context.coordinator.isRecording else { return }
-        button.title = displayString(shortcut)
+        button.title = restingLabel ?? displayString(shortcut)
         context.coordinator.onRecorded = onRecorded
+        context.coordinator.restingLabel = restingLabel
     }
 
     private func displayString(_ shortcut: ShortcutDefinition) -> String {
@@ -89,12 +101,17 @@ struct ShortcutRecorderView: NSViewRepresentable {
     @MainActor
     final class Coordinator: NSObject {
         var onRecorded: (ShortcutDefinition) -> Void
+        var restingLabel: String?
         weak var button: NSButton?
         var isRecording = false
         private var monitor: Any?
 
-        init(onRecorded: @escaping (ShortcutDefinition) -> Void) {
+        init(
+            onRecorded: @escaping (ShortcutDefinition) -> Void,
+            restingLabel: String?
+        ) {
             self.onRecorded = onRecorded
+            self.restingLabel = restingLabel
         }
 
         isolated deinit {
@@ -135,7 +152,10 @@ struct ShortcutRecorderView: NSViewRepresentable {
             isRecording = false
             button?.state = .off
             if let shortcut {
-                button?.title = ShortcutRecorderView.displayString(shortcut)
+                button?.title = restingLabel
+                    ?? ShortcutRecorderView.displayString(shortcut)
+            } else if let restingLabel {
+                button?.title = restingLabel
             }
         }
 

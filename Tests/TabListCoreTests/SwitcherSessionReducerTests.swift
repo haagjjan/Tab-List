@@ -267,7 +267,48 @@ struct SwitcherSessionReducerTests {
     }
 
     @Test
-    func testModifierReleaseDismissesThenActivatesSelection() {
+    func testRepeatedCyclingStopsAtBoundaryUntilDiscretePress() {
+        var state = visibleState()
+
+        XCTAssertEqual(
+            reduce(&state, .repeatedCycle(.forward)),
+            [.selectionChanged(index: 2)]
+        )
+        XCTAssertEqual(state.selectedWindow, older)
+        XCTAssertTrue(
+            reduce(&state, .repeatedCycle(.forward)).isEmpty
+        )
+        XCTAssertEqual(state.selectedWindow, older)
+
+        XCTAssertEqual(
+            reduce(&state, .cycle(.forward)),
+            [.selectionChanged(index: 0)]
+        )
+        XCTAssertEqual(state.selectedWindow, original)
+    }
+
+    @Test
+    func testRepeatedCyclesQueuedDuringPreparationClampAtBoundary() {
+        var state = beginningState()
+        for _ in 0 ..< 20 {
+            reduce(&state, .repeatedCycle(.forward))
+        }
+
+        reduce(
+            &state,
+            .prepared(
+                snapshotGeneration: 1,
+                orderedItems: [original, previous, older]
+            )
+        )
+
+        XCTAssertEqual(state.selectedWindow, older)
+        XCTAssertEqual(state.queuedCycleOffset, 0)
+        XCTAssertFalse(state.queuedCycleClampsAtBoundary)
+    }
+
+    @Test
+    func testModifierReleaseKeepsPanelUntilActivationIsVerified() {
         var state = visibleState()
 
         let effects = reduce(&state, .modifierReleased)
@@ -276,17 +317,18 @@ struct SwitcherSessionReducerTests {
         XCTAssertTrue(state.isPanelVisible)
         XCTAssertEqual(
             effects,
-            [.dismissPanel, .activate(previous.id)]
+            [.activate(previous.id)]
         )
 
-        XCTAssertTrue(
-            reduce(&state, .activationCompleted(.success)).isEmpty
+        XCTAssertEqual(
+            reduce(&state, .activationCompleted(.success)),
+            [.dismissPanel]
         )
         XCTAssertEqual(state, SwitcherSessionState())
     }
 
     @Test
-    func testPanelDismissalDuringCommitUpdatesVisibilityWithoutEndingSession() {
+    func testPanelDoesNotDismissBeforeActivationCompletes() {
         var state = visibleState()
         reduce(&state, .modifierReleased)
 
@@ -303,7 +345,7 @@ struct SwitcherSessionReducerTests {
 
         XCTAssertEqual(state.selectedWindow, older)
         XCTAssertEqual(state.phase, .committing)
-        XCTAssertEqual(effects, [.dismissPanel, .activate(older.id)])
+        XCTAssertEqual(effects, [.activate(older.id)])
     }
 
     @Test
@@ -399,6 +441,54 @@ struct SwitcherSessionReducerTests {
     }
 
     @Test
+    func testModifierReleaseWaitsForPendingCloseBeforeActivation() {
+        var state = visibleState()
+        reduce(&state, .closeSelected)
+
+        XCTAssertTrue(reduce(&state, .modifierReleased).isEmpty)
+        XCTAssertEqual(state.phase, .visible)
+        XCTAssertTrue(state.commitWhenCloseCompletes)
+
+        let effects = reduce(
+            &state,
+            .closeCompleted(key: previous.id, result: .windowClosed)
+        )
+
+        XCTAssertEqual(state.phase, .committing)
+        XCTAssertEqual(state.selectedWindow, older)
+        XCTAssertEqual(
+            effects,
+            [
+                .reloadPanel,
+                .selectionChanged(index: 1),
+                .activate(older.id),
+            ]
+        )
+    }
+
+    @Test
+    func testTypedCloseAndQuitOutcomesBothRemoveTheTarget() {
+        for result in [
+            WindowActionResult.windowClosed,
+            .applicationQuit,
+        ] {
+            var state = visibleState()
+            reduce(&state, .closeSelected)
+
+            let effects = reduce(
+                &state,
+                .closeCompleted(key: previous.id, result: result)
+            )
+
+            XCTAssertFalse(state.items.contains(previous))
+            XCTAssertEqual(
+                effects,
+                [.reloadPanel, .selectionChanged(index: 1)]
+            )
+        }
+    }
+
+    @Test
     func testClosingLastItemSelectsPreviousItem() {
         var state = visibleState()
         reduce(&state, .cycle(.forward))
@@ -485,7 +575,7 @@ struct SwitcherSessionReducerTests {
 
             XCTAssertEqual(
                 effects,
-                [.beep],
+                [.showFeedback(.closeFailed), .beep],
                 "Expected \(failure) to fail closed"
             )
             XCTAssertEqual(state.selectedWindow, previous)
@@ -534,27 +624,28 @@ struct SwitcherSessionReducerTests {
     }
 
     @Test
-    func testRegistryUpdateDropsPendingCloseOnlyWhenTargetDisappears() {
-        var retained = visibleState()
-        reduce(&retained, .closeSelected)
-        reduce(
-            &retained,
-            .registryUpdated(
-                snapshotGeneration: 2,
-                orderedItems: [older, previous, original]
-            )
-        )
-        XCTAssertEqual(retained.pendingClose, previous.id)
+    func testRegistryUpdatesAreDeferredUntilPendingCloseCompletes() {
+        var state = visibleState()
+        reduce(&state, .closeSelected)
+        let before = state
 
-        var removed = retained
-        reduce(
-            &removed,
-            .registryUpdated(
-                snapshotGeneration: 3,
-                orderedItems: [older, original]
-            )
+        XCTAssertTrue(
+            reduce(
+                &state,
+                .registryUpdated(
+                    snapshotGeneration: 2,
+                    orderedItems: []
+                )
+            ).isEmpty
         )
-        XCTAssertNil(removed.pendingClose)
+        XCTAssertEqual(state, before)
+
+        reduce(
+            &state,
+            .closeCompleted(key: previous.id, result: .success)
+        )
+        XCTAssertEqual(state.phase, .visible)
+        XCTAssertEqual(state.items, [original, older])
     }
 
     @Test
@@ -606,7 +697,7 @@ struct SwitcherSessionReducerTests {
     }
 
     @Test
-    func testActivationFailureResetsAndBeeps() {
+    func testActivationFailureReturnsToVisibleStateWithFeedback() {
         var state = visibleState()
         reduce(&state, .modifierReleased)
 
@@ -615,12 +706,16 @@ struct SwitcherSessionReducerTests {
             .activationCompleted(.failed(reason: "not verified"))
         )
 
-        XCTAssertEqual(state, SwitcherSessionState())
-        XCTAssertEqual(effects, [.beep])
+        XCTAssertEqual(state.phase, .visible)
+        XCTAssertTrue(state.isPanelVisible)
+        XCTAssertEqual(
+            effects,
+            [.showFeedback(.activationFailed), .beep]
+        )
     }
 
     @Test
-    func testEveryTypedActivationFailureResetsAndBeeps() {
+    func testEveryTypedActivationFailureRemainsVisibleWithFeedback() {
         let failures: [WindowActionResult] = [
             .targetMissing,
             .permissionDenied,
@@ -636,10 +731,11 @@ struct SwitcherSessionReducerTests {
 
             XCTAssertEqual(
                 reduce(&state, .activationCompleted(failure)),
-                [.beep],
+                [.showFeedback(.activationFailed), .beep],
                 "Expected \(failure) to fail closed"
             )
-            XCTAssertEqual(state, SwitcherSessionState())
+            XCTAssertEqual(state.phase, .visible)
+            XCTAssertTrue(state.isPanelVisible)
         }
     }
 

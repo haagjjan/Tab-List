@@ -105,8 +105,9 @@ app termination, and display disconnection while the switcher is visible.
 
 ### C. Validate private capabilities separately
 
-In Xcode, edit the TabList Debug scheme's Run environment. Enable only one of
-these at a time:
+The generated `TabList-Cross-Space-Debug` scheme enables all three gates for
+the final combined run. Before using it, duplicate that scheme as an unshared
+local scheme and enable only one of these at a time for the independent runs:
 
 ```text
 TABLIST_ENABLE_UNVERIFIED_SPACE_APIS=1
