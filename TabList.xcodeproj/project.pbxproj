@@ -256,7 +256,7 @@
 		AE5044A745C88E17D4194A58 /* SwitcherSessionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwitcherSessionCoordinator.swift; sourceTree = "<group>"; };
 		AE6B3F710F0B11F587A1DABD /* LayoutMetrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LayoutMetrics.swift; sourceTree = "<group>"; };
 		AF0FB7F0C88630B91203AD27 /* 03-selection-near-scroll-boundary.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "03-selection-near-scroll-boundary.png"; sourceTree = "<group>"; };
-		AF360FD22553935A0E1B6F4C /* LICENSE */ = {isa = PBXFileReference; lastKnownFileType = text; path = LICENSE; sourceTree = "<group>"; };
+		AF360FD22553935A0E1B6F4C /* LICENSE */ = {isa = PBXFileReference; path = LICENSE; sourceTree = "<group>"; };
 		B566578B12A928F9BF53DDAA /* LayoutMetricsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LayoutMetricsTests.swift; sourceTree = "<group>"; };
 		B5C2A409E570AA23DFCF1229 /* SwitcherOpeningCandidates.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwitcherOpeningCandidates.swift; sourceTree = "<group>"; };
 		B769BDE0F18881F6839DBDC7 /* SettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsTests.swift; sourceTree = "<group>"; };
@@ -1203,7 +1203,6 @@
 		61D1AA9C0B7EEC8A1B7DA8BF /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ARCHS = "$(ARCHS_STANDARD)";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Config/TabList.entitlements;
 				CODE_SIGN_IDENTITY = "Developer ID Application";
@@ -1251,7 +1250,6 @@
 		6F45C48D4D37B88994F3C0D2 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ARCHS = "$(ARCHS_STANDARD)";
 				CODE_SIGN_IDENTITY = "";
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -1353,7 +1351,6 @@
 		A79F119BF0709FE982A6D51E /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ARCHS = "$(ARCHS_STANDARD)";
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Config/TabList.entitlements;
 				CODE_SIGN_IDENTITY = "-";
@@ -1436,7 +1433,6 @@
 		E7E67A1737D764397B477260 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ARCHS = "$(ARCHS_STANDARD)";
 				CODE_SIGN_IDENTITY = "";
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
