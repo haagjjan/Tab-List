@@ -1,4 +1,4 @@
-# Tab‑List Title Mode — Internal Alpha Product Review
+# Tab‑List Title Mode — Internal Alpha Product Review - Implemented
 
 | Field | Value |
 |---|---|
