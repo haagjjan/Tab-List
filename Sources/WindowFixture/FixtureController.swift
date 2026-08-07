@@ -381,6 +381,11 @@ final class FixtureController: NSObject, NSWindowDelegate {
         let controller = NSWindowController(window: window)
         fixtureWindows.append(controller)
         controller.showWindow(nil)
+        // Scenario windows cascade across the screen and would otherwise bury
+        // the controls, leaving later buttons unclickable by hand and by test.
+        // Ordering only; the window level stays normal so Tab-List classifies
+        // the controls exactly like any other standard window.
+        controlWindowController?.window?.orderFront(nil)
     }
 
     func windowWillClose(_ notification: Notification) {
