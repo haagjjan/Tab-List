@@ -43,7 +43,8 @@ selected=""
 for candidate in "${candidates[@]}"; do
   xcodebuild_path="${candidate}/usr/bin/xcodebuild"
   [[ -x "$xcodebuild_path" ]] || continue
-  version="$("$xcodebuild_path" -version | head -n 1)"
+  version="$("$xcodebuild_path" -version 2>/dev/null || true)"
+  version="${version%%$'\n'*}"
   if [[ "$version" == "Xcode 26."* ]]; then
     selected="$candidate"
     break
@@ -57,13 +58,28 @@ if [[ "$(xcode-select -p 2>/dev/null || true)" != "$selected" ]]; then
   sudo xcode-select -s "$selected"
 fi
 
-xcode_version="$(xcodebuild -version | head -n 1)"
-swift_version="$(xcrun swift --version | head -n 1)"
+xcode_version="$(xcodebuild -version)"
+xcode_version="${xcode_version%%$'\n'*}"
+swift_version="$(xcrun swift --version)"
+swift_version="${swift_version%%$'\n'*}"
 sdk_version="$(xcrun --sdk macosx --show-sdk-version)"
 [[ "$xcode_version" == "Xcode 26."* ]] ||
   die "Selected developer directory reported '${xcode_version}', not Xcode 26.x."
-[[ "$swift_version" == *"Swift version 6.2"* ]] ||
-  die "Selected Xcode reported '${swift_version}', not Swift 6.2."
+[[ "$swift_version" == *"Swift version "* ]] ||
+  die "Could not find a Swift version in '${swift_version}'."
+swift_semver="${swift_version##*Swift version }"
+swift_semver="${swift_semver%% *}"
+swift_major="${swift_semver%%.*}"
+if [[ "$swift_semver" == *.* ]]; then
+  swift_minor="${swift_semver#*.}"
+  swift_minor="${swift_minor%%.*}"
+else
+  swift_minor=0
+fi
+[[ "$swift_major" =~ ^[0-9]+$ && "$swift_minor" =~ ^[0-9]+$ ]] ||
+  die "Could not parse a Swift version from '${swift_version}'."
+(( swift_major > 6 || (swift_major == 6 && swift_minor >= 2) )) ||
+  die "Selected Xcode reported Swift ${swift_semver}; Tab-List requires Swift 6.2 or newer."
 [[ "$sdk_version" == "26."* ]] ||
   die "Selected Xcode reported macOS SDK '${sdk_version}', not 26.x."
 xcodebuild -checkFirstLaunchStatus >/dev/null 2>&1 ||
