@@ -3,8 +3,8 @@
 ## Purpose
 
 Prove that the optimized Tab-List release candidate meets its latency, CPU,
-memory, capture, layout, and accessibility requirements on representative
-Apple Silicon hardware.
+memory, layout, and accessibility requirements on representative Apple Silicon
+hardware.
 
 Compilation and unit tests cannot prove these requirements. Results must come
 from real release builds under controlled, reproducible conditions.
@@ -28,7 +28,7 @@ accessibility quality.
 - One 1× and one 2× display path.
 - A small/notched laptop display and a multi-display setup.
 - Synthetic fixture windows for 10, 50, and 100-window cases.
-- Accessibility and Screen Recording permission states that can be reset.
+- An Accessibility permission state that can be reset.
 - Xcode Instruments and enough free disk space for temporary traces.
 
 Record the Mac model class, chip family, RAM, OS version/build, display scale,
@@ -54,15 +54,13 @@ Apple Account details, or real window titles.
 
 | Metric | Release budget |
 |---|---:|
-| Cached overlay appearance | P95 below 75 ms |
+| Cached panel appearance | P95 below 75 ms |
 | Selection movement | Inside one 16 ms frame |
+| Window discovery, 100 windows | Below 120 ms |
 | Current-Space activation | Normally below 250 ms |
 | Cross-Space activation | Below 750 ms, excluding macOS Space animation |
 | Idle CPU | Average below 0.5% over five minutes |
-| Icon/Title memory, 50 windows | Below 60 MB |
-| Thumbnail memory, 50 windows | Below 200 MB |
-| Thumbnail image cache | Hard maximum 128 MiB |
-| Capture shutdown after dismissal | Idle within one second |
+| Resident memory, 100 windows | Below 60 MB |
 
 The test must also cover 10, 50, and 100 windows and confirm that repeated
 opening/dismissal does not create unbounded CPU or memory growth.
@@ -83,12 +81,8 @@ opening/dismissal does not create unbounded CPU or memory growth.
 2. Record Mac class/chip/RAM manually without serial or device identifiers.
 3. Quit unrelated applications and disable optional third-party overlays.
 4. Launch `WindowFixture` and create the required synthetic window count.
-5. Verify the candidate is a Release build and private capabilities match the
-   compatibility evidence for this exact Darwin build.
-6. Test each presentation mode independently:
-   - Thumbnails.
-   - App Icons.
-   - Titles.
+5. Verify the candidate is a Release build and that the operational capability
+   mask matches the compatibility evidence for this exact Darwin build.
 
 ### B. Measure overlay and selection latency
 
@@ -116,50 +110,44 @@ opening/dismissal does not create unbounded CPU or memory growth.
    the main actor, or actions for another process.
 5. Confirm stale and closed windows return typed failures.
 
-### D. Measure CPU, memory, and capture
+### D. Measure CPU and memory
 
-1. With the panel hidden and no window activity, record five minutes of idle CPU
-   in every presentation mode.
+1. With the panel hidden and no window activity, record five minutes of idle
+   CPU.
 2. For each of 10, 50, and 100 windows, record:
    - Resident memory before opening.
    - Peak memory while visible.
    - Memory after dismissal.
    - Memory after a pressure event.
-3. In Thumbnail mode:
-   - Confirm no more than three captures execute concurrently.
-   - Fill and evict the cache.
-   - Confirm calculated thumbnail cost never exceeds 128 MiB.
-   - Dismiss during capture and verify work becomes idle within one second.
-   - Revoke Screen Recording and verify displayed/cached previews are purged.
-4. In App Icon and Title modes:
-   - Confirm ScreenCaptureKit is never initialized or queried.
+3. Measure discovery cost directly: with 100 windows open, sample the time from
+   the start of a forced registry refresh to its completion at least 20 times.
+4. Confirm thread count stays bounded while discovery runs across every running
+   application.
 5. Repeat open/cycle/dismiss at least 100 times and check for a rising baseline.
-6. Search the app's Caches and Application Support locations for window image
-   files. Finding any is a release failure.
+6. Search the app's Caches and Application Support locations for any window
+   image file. Finding one is a release failure, because no capture code exists.
 
 ### E. Inspect layout and accessibility
 
-Run every presentation mode in Small, Medium, Large, and Auto sizes, using
-System, Light, and Dark themes.
+Run the list with 1, 10, 50, and 100 windows in System, Light, and Dark themes.
 
 For each combination:
 
 - Verify 1× and 2× rendering.
 - Verify a small/notched display and each pointer display.
-- Verify the selected item stays visible while scrolling.
-- Verify titles truncate at the end and expose full accessible text.
-- Verify no tile, text, badge, outline, or close control is clipped.
-- Verify the close target is at least 24×24 points.
-- Verify system accent color and keyboard focus visibility.
+- Verify the selected row stays visible while scrolling and after wrapping.
+- Verify application names and titles truncate at the end and expose full
+  accessible text.
+- Verify no row text, state badge, or close control is clipped.
+- Verify the close target is at least 20×20 points and reachable by pointer.
+- Verify system accent color and selection visibility.
 
 Then test:
 
 - **VoiceOver:** app name, window title, state, position, and selected status are
   spoken correctly, for example “Firefox, Project plan — 2 of 8, selected.”
-- **Reduce Transparency:** material is replaced by an opaque semantic
-  background.
 - **Reduce Motion:** animations are removed or materially reduced.
-- **Increase Contrast:** the selection and focus indicator remain clear.
+- **Increase Contrast:** the selection remains clear.
 - **Light/Dark/System appearance:** content remains readable and native.
 - **Long and empty titles:** labels remain meaningful and do not overlap.
 - **Keyboard-only use:** the complete switcher session and close action remain
@@ -169,9 +157,9 @@ Then test:
 
 Create a redacted summary with one row per configuration:
 
-| Commit | OS build | Hardware class | Mode | Windows | Metric | Median | P95 | Max | Budget | Pass |
-|---|---|---|---|---:|---|---:|---:|---:|---:|---|
-| | | | | | | | | | | |
+| Commit | OS build | Hardware class | Windows | Metric | Median | P95 | Max | Budget | Pass |
+|---|---|---|---:|---|---:|---:|---:|---:|---|
+| | | | | | | | | | |
 
 Also retain:
 
@@ -179,9 +167,8 @@ Also retain:
 - Measurement commands or Instruments templates.
 - Screenshots made only from synthetic fixture content.
 - VoiceOver checklist and tester notes.
-- Reduce Motion, Reduce Transparency, and Increase Contrast results.
-- Evidence that Icon/Title modes performed no capture.
-- Evidence that no screenshots were persisted.
+- Reduce Motion and Increase Contrast results.
+- Evidence that no window image was persisted anywhere.
 
 Keep raw traces outside the public repository until checked for user names,
 paths, titles, process arguments, and device identifiers. Commit only sanitized
@@ -190,12 +177,10 @@ summaries if the project chooses to preserve them.
 ## Exit criteria
 
 - Every numeric budget passes.
-- Both 50-window memory budgets pass.
-- The 128 MiB thumbnail hard limit is never exceeded.
-- Capture becomes idle within one second after dismissal.
-- Idle CPU passes in all three modes.
-- No screenshot content is written to disk or transmitted.
-- Icon and Title modes do not invoke ScreenCaptureKit.
+- The 100-window memory budget passes.
+- Discovery stays inside its budget with every test application running.
+- Idle CPU passes.
+- No window content is written to disk or transmitted.
 - All accessibility and layout combinations pass.
 - Results are reproduced in a second clean run.
 
@@ -217,7 +202,7 @@ Codex can:
 
 1. Run scripted benchmarks and extract signpost intervals.
 2. Build deterministic CSV and Markdown summaries from reviewed samples.
-3. Diagnose latency, concurrency, cache, AX, or memory failures.
+3. Diagnose latency, concurrency, Accessibility, or memory failures.
 4. Add regression tests and performance assertions.
 5. Repair visual or accessibility defects.
 6. Compare a new candidate against the retained baseline.
