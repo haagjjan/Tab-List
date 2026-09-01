@@ -17,7 +17,7 @@ struct SwitcherOpeningCandidates: Equatable, Sendable {
 
     static func cached(
         from snapshot: WindowSnapshot?,
-        settings: SettingsV1,
+        settings: TabListSettings,
         pointerDisplayID: CGDirectDisplayID?,
         currentWindowKey: WindowKey? = nil
     ) -> Self? {
@@ -35,7 +35,7 @@ struct SwitcherOpeningCandidates: Equatable, Sendable {
 
     static func make(
         from snapshot: WindowSnapshot,
-        settings: SettingsV1,
+        settings: TabListSettings,
         pointerDisplayID: CGDirectDisplayID?,
         currentWindowKey: WindowKey? = nil
     ) -> Self {
