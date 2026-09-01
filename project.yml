@@ -103,7 +103,6 @@ targets:
         LSMinimumSystemVersion: "$(MACOSX_DEPLOYMENT_TARGET)"
         LSUIElement: true
         NSHumanReadableCopyright: "Copyright © 2026 Jan Haag. Released under the MIT License."
-        NSScreenCaptureUsageDescription: "Tab‑List captures scaled previews of open windows when Thumbnail mode is enabled."
         SUEnableAutomaticChecks: true
         SUEnableSystemProfiling: false
         SUFeedURL: "https://github.com/haagjjan/Tab-List/releases/latest/download/appcast.xml"
@@ -217,18 +216,6 @@ targets:
         TEST_TARGET_NAME: WindowFixture
 
 schemes:
-  TabList-Cross-Space-Debug:
-    build:
-      targets:
-        TabList: [run]
-    run:
-      config: Debug
-      executable: TabList
-      environmentVariables:
-        TABLIST_ENABLE_UNVERIFIED_AX_WINDOW_ID: "1"
-        TABLIST_ENABLE_UNVERIFIED_SPACE_APIS: "1"
-        TABLIST_ENABLE_UNVERIFIED_EXACT_ACTIVATION: "1"
-
   TabList-CI:
     build:
       targets:
