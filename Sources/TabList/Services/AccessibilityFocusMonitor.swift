@@ -4,10 +4,8 @@ import Foundation
 import TabListCore
 
 enum AccessibilityRegistryEvent: Sendable {
-    case focused(WindowKey)
     case focusChanged(pid_t)
     case inventoryChanged(pid_t)
-    case windowDestroyed(WindowKey)
 }
 
 private final class ObservedAXElementBox: @unchecked Sendable {
@@ -108,7 +106,6 @@ private final class AccessibilityObserverWorker: @unchecked Sendable {
         kAXUIElementDestroyedNotification as String,
     ]
 
-    private let windowServer: WindowServerBridge
     private let sink: AccessibilityEventSink
     private let lifecycleLock = NSLock()
     private var runLoop: CFRunLoop?
@@ -120,11 +117,7 @@ private final class AccessibilityObserverWorker: @unchecked Sendable {
     private var registrations: [pid_t: Registration] = [:]
     private var discoveryInFlight: Set<pid_t> = []
 
-    init(
-        windowServer: WindowServerBridge,
-        sink: AccessibilityEventSink
-    ) {
-        self.windowServer = windowServer
+    init(sink: AccessibilityEventSink) {
         self.sink = sink
     }
 
@@ -311,30 +304,17 @@ private final class AccessibilityObserverWorker: @unchecked Sendable {
     ) {
         guard registrations[pid]?.token == token else { return }
 
-        if notification == (kAXFocusedWindowChangedNotification as String) {
-            if let windowID = windowServer.windowID(for: element) {
-                sink.deliver(
-                    .focused(WindowKey(pid: pid, windowID: windowID))
-                )
-            } else {
-                sink.deliver(.focusChanged(pid))
-            }
+        switch notification {
+        case kAXFocusedWindowChangedNotification:
+            sink.deliver(.focusChanged(pid))
             discoverAndRegisterWindows(pid: pid, token: token)
-        } else if notification == (kAXWindowCreatedNotification as String) {
+        case kAXWindowCreatedNotification:
             discoverAndRegisterWindows(pid: pid, token: token)
             sink.deliver(.inventoryChanged(pid))
-        } else if notification
-            == (kAXUIElementDestroyedNotification as String) {
-            let destroyedKey = windowServer.windowID(for: element).map {
-                WindowKey(pid: pid, windowID: $0)
-            }
+        case kAXUIElementDestroyedNotification:
             removeWindow(element, pid: pid)
-            if let destroyedKey {
-                sink.deliver(.windowDestroyed(destroyedKey))
-            } else {
-                sink.deliver(.inventoryChanged(pid))
-            }
-        } else {
+            sink.deliver(.inventoryChanged(pid))
+        default:
             sink.deliver(.inventoryChanged(pid))
         }
     }
@@ -481,18 +461,15 @@ private final class AccessibilityObserverWorker: @unchecked Sendable {
 /// actor, while every Accessibility call is delegated to the worker.
 @MainActor
 final class AccessibilityFocusMonitor {
-    private let windowServer: WindowServerBridge
     private let sink: AccessibilityEventSink
     private var worker: AccessibilityObserverWorker?
     private var workspaceTokens: [any NSObjectProtocol] = []
 
     init(
-        windowServer: WindowServerBridge,
         handler: @escaping @MainActor @Sendable (
             AccessibilityRegistryEvent
         ) -> Void
     ) {
-        self.windowServer = windowServer
         sink = AccessibilityEventSink(handler: handler)
     }
 
@@ -502,10 +479,7 @@ final class AccessibilityFocusMonitor {
 
     func start() {
         guard AXIsProcessTrusted(), worker == nil else { return }
-        let worker = AccessibilityObserverWorker(
-            windowServer: windowServer,
-            sink: sink
-        )
+        let worker = AccessibilityObserverWorker(sink: sink)
         guard worker.start() else { return }
         self.worker = worker
 
