@@ -36,30 +36,29 @@ window titles.
 - Hardware:
 - Display and Space configuration:
 - Accessibility permission states tested:
-- Screen Recording permission states tested:
-- Private ABI capabilities validated:
-- Public fallback behavior validated:
+- Detected capability mask:
+- Operational capability mask:
+- Degraded-scope behavior validated:
 - Fixture/application matrix result:
+- Firefox, Chrome, Safari, Finder, Electron discovery result:
 - Redacted diagnostics attached:
 
 ## Performance evidence
 
-- Cached overlay P95:
+- Cached panel P95:
 - Selection movement:
+- 100-window discovery:
 - Current-Space activation:
 - Cross-Space activation:
 - Five-minute idle CPU:
-- 50-window icon/title memory:
-- 50-window thumbnail memory:
-- Thumbnail cache peak:
-- Capture shutdown after dismissal:
+- 100-window resident memory:
 
 ## Clean installation and update
 
 - [ ] Clean-Mac DMG installation passed
 - [ ] Fresh Gatekeeper launch passed
 - [ ] Accessibility onboarding passed
-- [ ] Thumbnail permission skip passed
+- [ ] Switcher populated immediately after the Accessibility grant
 - [ ] Update from previous signed beta/release to the exact candidate ZIP passed
 - [ ] Temporary Sparkle feed override and staging objects were removed
 - [ ] Production feed URL was restored and rechecked
