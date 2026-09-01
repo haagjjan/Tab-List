@@ -5,8 +5,6 @@ import TabListCore
 @main
 @MainActor
 final class TabListApplication: NSObject, NSApplicationDelegate {
-    private static let resumeThumbnailOnboardingArgument =
-        "--resume-thumbnail-onboarding"
     private var settingsStore: SettingsStore!
     private var settingsModel: SettingsViewModel!
     private var onboardingModel: OnboardingViewModel!
@@ -29,8 +27,7 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
     private var session: SwitcherSessionCoordinator!
 
     private var permissions = SystemPermissionSnapshot(
-        accessibility: .notDetermined,
-        screenRecording: .notDetermined
+        accessibility: .notDetermined
     )
     private var permissionTask: Task<Void, Never>?
     private var notificationTokens: [any NSObjectProtocol] = []
@@ -59,12 +56,13 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
         configureLifecycleHandling()
 
         registryObserver.start()
-        guard let startupRegistry = registry else { return }
-        Task { [weak self, startupRegistry] in
-            _ = await startupRegistry.refresh()
-            guard let self else { return }
-            self.updateCompatibilityWarning()
-            self.session.warmCaches()
+        if let startupRegistry = registry {
+            Task { [weak self, startupRegistry] in
+                _ = await startupRegistry.refresh()
+                guard let self else { return }
+                self.updateCompatibilityWarning()
+                self.session.warmCaches()
+            }
         }
         startPermissionMonitoring()
 
@@ -75,7 +73,6 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
             settingsWindow.show()
         } else if !settingsStore.hasCompletedOnboarding {
             onboardingWindow.show()
-            resumeThumbnailOnboardingIfRequested()
         } else if !settingsStore.settings.showMenuBarIcon {
             // Keep Settings reachable when the status item was deliberately
             // hidden during the previous launch.
@@ -115,57 +112,22 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
         windowServer = WindowServerBridge()
         accessibility = AccessibilityBridge(windowServer: windowServer)
 
-        let inventory = PublicWindowInventory(
-            accessibility: accessibility,
-            windowServer: windowServer
+        registry = WindowRegistry(
+            inventory: WindowInventory(
+                accessibility: accessibility,
+                windowServer: windowServer
+            )
         )
-        registry = WindowRegistry(inventory: inventory)
         registryObserver = WindowRegistryLifecycleObserver(
             registry: registry,
             accessibility: accessibility
         )
-        focusMonitor = AccessibilityFocusMonitor(
-            windowServer: windowServer
-        ) { [weak self, weak registryObserver, weak registry] event in
+        focusMonitor = AccessibilityFocusMonitor {
+            [weak registryObserver] event in
             switch event {
-            case let .focused(key):
-                guard GlobalFocusObservationGate.accepts(
-                    observedPID: key.pid,
-                    frontmostPID: NSWorkspace.shared
-                        .frontmostApplication?.processIdentifier
-                ) else {
-                    return
-                }
-                Task { [weak registry] in
-                    await registry?.noteFocused(key)
-                }
             case let .focusChanged(pid):
-                guard GlobalFocusObservationGate.accepts(
-                    observedPID: pid,
-                    frontmostPID: NSWorkspace.shared
-                        .frontmostApplication?.processIdentifier
-                ) else {
-                    return
-                }
-                Task { [weak self, weak registry] in
-                    guard let key = await self?.accessibility
-                        .focusedWindowKey(for: pid),
-                          GlobalFocusObservationGate.accepts(
-                              observedPID: pid,
-                              frontmostPID: NSWorkspace.shared
-                                  .frontmostApplication?.processIdentifier
-                          )
-                    else {
-                        return
-                    }
-                    await registry?.noteFocused(key)
-                }
+                registryObserver?.noteFocusChanged(pid: pid)
             case .inventoryChanged:
-                registryObserver?.scheduleRefresh()
-            case let .windowDestroyed(key):
-                Task { [weak registry] in
-                    await registry?.remove(key)
-                }
                 registryObserver?.scheduleRefresh()
             }
         }
@@ -187,15 +149,13 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
 #endif
         menuBar.setVisible(settingsStore.settings.showMenuBarIcon)
 
-        let actions = WindowActionService(
-            registry: registry,
-            accessibility: accessibility,
-            windowServer: windowServer
-        )
         session = SwitcherSessionCoordinator(
             snapshotProvider: registry,
             focusHistoryProvider: registry,
-            windowActions: actions,
+            windowActions: WindowActionService(
+                registry: registry,
+                accessibility: accessibility
+            ),
             shortcutService: shortcutService,
             iconCache: AppIconCache(),
             panelController: SwitcherPanelController(),
@@ -209,24 +169,16 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
     }
 
     private func configureCallbacks() {
-        menuBar.onOpenSettings = { [weak self] in
-            self?.openSettings()
-        }
+        menuBar.onOpenSettings = { [weak self] in self?.openSettings() }
         menuBar.onToggleEnabled = { [weak self] enabled in
             self?.setEnabled(enabled)
         }
         menuBar.onOpenPermissions = { [weak self] in
             self?.openPermissionSettings()
         }
-        menuBar.onCheckForUpdates = { [weak self] in
-            self?.checkForUpdates()
-        }
-        menuBar.onOpenAbout = { [weak self] in
-            self?.showAbout()
-        }
-        menuBar.onQuit = {
-            NSApp.terminate(nil)
-        }
+        menuBar.onCheckForUpdates = { [weak self] in self?.checkForUpdates() }
+        menuBar.onOpenAbout = { [weak self] in self?.showAbout() }
+        menuBar.onQuit = { NSApp.terminate(nil) }
 #if DEBUG
         menuBar.onOpenDebugInspector = { [weak self] in
             guard let self else { return }
@@ -237,12 +189,7 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
         }
 #endif
 
-        settingsWindow.onWillClose = { [weak self] in
-            self?.session.cancel()
-        }
-        session.onCompatibilityStatusChanged = { [weak self] in
-            self?.updateCompatibilityWarning()
-        }
+        settingsWindow.onWillClose = { [weak self] in self?.session.cancel() }
 
         settingsModel.onSettingsChanged = { [weak self] settings in
             self?.applySettings(settings)
@@ -258,9 +205,6 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
         settingsModel.onRequestAccessibility = { [weak self] in
             self?.requestAccessibility()
         }
-        settingsModel.onRequestScreenRecording = { [weak self] in
-            self?.requestScreenRecording(advanceOnboarding: false)
-        }
         settingsModel.onOpenPermissions = { [weak self] in
             self?.openPermissionSettings()
         }
@@ -275,20 +219,6 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
         }
         onboardingModel.onOpenAccessibilitySettings = { [weak self] in
             self?.openPermissionSettings()
-        }
-        onboardingModel.onRequestScreenRecording = { [weak self] in
-            self?.requestScreenRecording(advanceOnboarding: true)
-        }
-        onboardingModel.onQuitAndReopen = { [weak self] in
-            self?.quitAndReopenForScreenRecording()
-        }
-        onboardingModel.onContinueWithoutThumbnails = { [weak self] in
-            guard let self else { return }
-            var settings = self.settingsStore.settings
-            settings.presentation = .titles
-            self.settingsStore.update(settings)
-            self.settingsModel.replaceSettingsWithoutNotification(settings)
-            self.session.presentationSettingsChanged()
         }
         onboardingModel.onReady = { [weak self] in
             self?.registerConfiguredShortcutIfPossible(
@@ -312,7 +242,7 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in self?.session.cancel() }
-            }
+            },
         ]
         workspaceNotificationTokens = [
             NSWorkspace.shared.notificationCenter.addObserver(
@@ -331,12 +261,9 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    self?.registryObserver.refreshNow()
-                    self?.focusMonitor.refresh()
-                    self?.recoverShortcutAfterSystemTransition()
-                    self?.synchronizeBackgroundRefresh()
+                    self?.recoverAfterSystemTransition()
                 }
-            }
+            },
         ]
 
         let distributed = DistributedNotificationCenter.default()
@@ -357,10 +284,7 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    self?.registryObserver.refreshNow()
-                    self?.focusMonitor.refresh()
-                    self?.recoverShortcutAfterSystemTransition()
-                    self?.synchronizeBackgroundRefresh()
+                    self?.recoverAfterSystemTransition()
                 }
             },
         ]
@@ -379,9 +303,7 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
     }
 
     private func removeLifecycleHandling() {
-        notificationTokens.forEach(
-            NotificationCenter.default.removeObserver
-        )
+        notificationTokens.forEach(NotificationCenter.default.removeObserver)
         notificationTokens.removeAll()
         workspaceNotificationTokens.forEach(
             NSWorkspace.shared.notificationCenter.removeObserver
@@ -412,50 +334,33 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
         permissions = status
         if status != previous {
             TabListLog.permissions.notice(
-                "Permission state changed: Accessibility \(status.accessibility.rawValue, privacy: .public), Screen Recording \(status.screenRecording.rawValue, privacy: .public)"
+                "Accessibility permission is now \(status.accessibility.rawValue, privacy: .public)"
             )
         }
 
-        let accessibilityGranted = status.accessibility == .authorized
-        let screenRecordingGranted = status.screenRecording == .authorized
-        settingsModel.accessibilityGranted = accessibilityGranted
-        settingsModel.screenRecordingGranted = screenRecordingGranted
-        onboardingModel.accessibilityGranted = accessibilityGranted
-        onboardingModel.screenRecordingGranted = screenRecordingGranted
-        menuBar.updatePermissions(
-            accessibility: accessibilityGranted,
-            screenRecording: screenRecordingGranted
-        )
-        session.updateThumbnailCaptureAuthorization(
-            screenRecordingGranted
-        )
+        let granted = status.accessibility == .authorized
+        settingsModel.accessibilityGranted = granted
+        onboardingModel.accessibilityGranted = granted
+        menuBar.updatePermissions(accessibility: granted)
 
-        if status.accessibility == .authorized,
-           previous.accessibility != .authorized {
+        if granted, previous.accessibility != .authorized {
             focusMonitor.start()
+            registryObserver.refreshNow()
             registerConfiguredShortcutIfPossible(
                 allowDuringOnboarding: onboardingModel.step == .ready
             )
-        } else if status.accessibility != .authorized,
-                  previous.accessibility == .authorized {
+            updateCompatibilityWarning()
+        } else if !granted, previous.accessibility == .authorized {
             session.cancel()
             shortcutService.unregister()
             focusMonitor.stop()
         }
-
-        if status.screenRecording == .authorized,
-           onboardingModel.screenRecordingRestartRequired
-            || onboardingModel.step == .thumbnails {
-            onboardingModel.showReady()
-        }
-        synchronizeBackgroundRefresh()
     }
 
-    private func applySettings(_ settings: SettingsV1) {
+    private func applySettings(_ settings: TabListSettings) {
         let previous = settingsStore.settings
-        let registrationRequired =
-            previous.shortcut != settings.shortcut
-                && shortcutService.registeredShortcut != settings.shortcut
+        let registrationRequired = previous.shortcut != settings.shortcut
+            && shortcutService.registeredShortcut != settings.shortcut
         let registrationSucceeded = !registrationRequired
             || replaceShortcut(with: settings.shortcut)
         let committed = SettingsTransaction.committed(
@@ -479,13 +384,9 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
             committed.automaticallyChecksForUpdates
         )
 
-        if previous.presentation != committed.presentation
-            || previous.panelSize != committed.panelSize
-            || previous.theme != committed.theme
-        {
-            session.presentationSettingsChanged()
+        if previous.theme != committed.theme {
+            session.appearanceSettingsChanged()
         }
-        synchronizeBackgroundRefresh()
     }
 
     private func setEnabled(_ enabled: Bool) {
@@ -493,7 +394,6 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
         menuBar.setEnabled(enabled)
         if enabled {
             registerConfiguredShortcutIfPossible()
-            synchronizeBackgroundRefresh()
         } else {
             session.shutdown()
             shortcutService.unregister()
@@ -538,8 +438,7 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
     ) {
         guard !globalShortcutIsDisabledForTesting,
               isEnabled,
-              settingsStore.hasCompletedOnboarding
-                || allowDuringOnboarding,
+              settingsStore.hasCompletedOnboarding || allowDuringOnboarding,
               permissions.accessibility == .authorized,
               shortcutService.registeredShortcut
                 != settingsStore.settings.shortcut
@@ -557,128 +456,13 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func requestScreenRecording(advanceOnboarding: Bool) {
-        guard let service = permissionService else { return }
-        onboardingModel.isRequesting = true
-        Task { [weak self, service] in
-            let result = await service.requestScreenRecordingResult()
-            guard let self else { return }
-            self.onboardingModel.isRequesting = false
-            self.applyPermissionStatus(result.status)
-
-            if result.requiresRestart {
-                self.onboardingModel.screenRecordingRestartRequired = true
-            } else {
-                self.onboardingModel.screenRecordingRestartRequired = false
-                if advanceOnboarding,
-                   result.status.screenRecording == .authorized {
-                    self.onboardingModel.showReady()
-                }
-            }
-        }
-    }
-
-    private func resumeThumbnailOnboardingIfRequested() {
-        guard ProcessInfo.processInfo.arguments.contains(
-            Self.resumeThumbnailOnboardingArgument
-        ) else {
-            return
-        }
-        guard let service = permissionService else { return }
-        Task { [weak self, service] in
-            let status = await service.currentStatus()
-            guard let self else { return }
-            self.applyPermissionStatus(status)
-            if status.accessibility != .authorized {
-                self.onboardingModel.step = .accessibility
-            } else if status.screenRecording == .authorized {
-                self.onboardingModel.showReady()
-            } else {
-                self.onboardingModel.step = .thumbnails
-                self.onboardingModel.screenRecordingRestartRequired = false
-            }
-        }
-    }
-
-    private func quitAndReopenForScreenRecording() {
-        let bundleURL = Bundle.main.bundleURL
-        guard bundleURL.pathExtension.caseInsensitiveCompare("app")
-                == .orderedSame else {
-            showAlert(
-                title: String(localized: "Tab‑List could not restart"),
-                message: String(
-                    localized: "Quit Tab‑List and open it again to finish enabling thumbnail previews."
-                )
-            )
-            return
-        }
-
-        let helper = Process()
-        helper.executableURL = URL(fileURLWithPath: "/bin/sh")
-        helper.arguments = [
-            "-c",
-            """
-            while kill -0 "$1" 2>/dev/null; do
-                /bin/sleep 0.1
-            done
-            exec /usr/bin/open "$2" --args "$3"
-            """,
-            "tab-list-relaunch",
-            String(ProcessInfo.processInfo.processIdentifier),
-            bundleURL.path,
-            Self.resumeThumbnailOnboardingArgument,
-        ]
-        helper.standardOutput = FileHandle.nullDevice
-        helper.standardError = FileHandle.nullDevice
-
-        do {
-            try helper.run()
-            NSApp.terminate(nil)
-        } catch {
-            showAlert(
-                title: String(localized: "Tab‑List could not restart"),
-                message: String(
-                    localized: "Quit Tab‑List and open it again to finish enabling thumbnail previews."
-                )
-            )
-        }
-    }
-
     private func openPermissionSettings() {
-        if permissions.accessibility != .authorized {
-            permissionService.openAccessibilitySettings()
-        } else if permissions.screenRecording != .authorized {
-            permissionService.openScreenRecordingSettings()
-        } else {
-            permissionService.openAccessibilitySettings()
-        }
+        permissionService.openAccessibilitySettings()
     }
 
-    private func synchronizeBackgroundRefresh() {
-        session.updateBackgroundRefresh(
-            enabled: isEnabled
-                && permissions.screenRecording == .authorized
-        )
-    }
-
-    private func updateCompatibilityWarning() {
-        let report = windowServer.capabilityReport
-        let thumbnailCaptureIsDegraded =
-            settingsStore.settings.presentation == .thumbnails
-                && ProcessInfo.processInfo.operatingSystemVersion
-                    .majorVersion == 15
-                && !report.operational.contains(.hardwareCapture)
-        let warning = report.usesPublicFallbacks
-            || thumbnailCaptureIsDegraded
-            ? String(
-                localized: "Some private macOS window capabilities are unavailable. Current-Space switching remains available through public fallbacks; cross-Space activation or previews may be limited on this system."
-            )
-            : nil
-        settingsModel.compatibilityWarning = warning
-        menuBar.updateCompatibilityWarning(warning)
-    }
-
-    private func recoverShortcutAfterSystemTransition() {
+    private func recoverAfterSystemTransition() {
+        registryObserver.refreshNow()
+        focusMonitor.refresh()
         guard isEnabled,
               settingsStore.hasCompletedOnboarding,
               permissions.accessibility == .authorized,
@@ -696,6 +480,16 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func updateCompatibilityWarning() {
+        let warning = windowServer.capabilityReport.usesPublicFallbacks
+            ? String(
+                localized: "This system does not expose the private Space queries Tab‑List uses for desktop filtering. Every window still appears and can be activated; the “Visible now” scope falls back to showing all desktops."
+            )
+            : nil
+        settingsModel.compatibilityWarning = warning
+        menuBar.updateCompatibilityWarning(warning)
+    }
+
     private func openSettings() {
         session.cancel()
         updateLaunchAtLoginState()
@@ -705,8 +499,7 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
     private func updateLaunchAtLoginState() {
         let state = launchAtLogin.state
         settingsModel.launchAtLoginEnabled = state == .enabled
-        settingsModel.launchAtLoginRequiresApproval =
-            state == .requiresApproval
+        settingsModel.launchAtLoginRequiresApproval = state == .requiresApproval
     }
 
     private func setLaunchAtLogin(_ enabled: Bool) -> Bool {
@@ -744,16 +537,11 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
     }
 
     private func exportDiagnostics() {
-        guard let registry,
-              let permissionService,
-              let windowServer
-        else {
+        guard let registry, let permissionService, let windowServer else {
             return
         }
         Task { [weak self, registry, permissionService, windowServer] in
-            let snapshot = await registry.snapshot(
-                forceRefreshIfStale: true
-            )
+            let snapshot = await registry.snapshot(forceRefreshIfStale: true)
             let permissions = await permissionService.currentStatus()
             let report = DiagnosticsService.makeReport(
                 permissions: permissions,
@@ -771,7 +559,9 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
                 try await DiagnosticsService.export(report, to: url)
             } catch {
                 self.showAlert(
-                    title: String(localized: "Diagnostics could not be exported"),
+                    title: String(
+                        localized: "Diagnostics could not be exported"
+                    ),
                     message: error.localizedDescription
                 )
             }

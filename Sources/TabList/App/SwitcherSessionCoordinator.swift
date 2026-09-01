@@ -4,86 +4,21 @@ import Foundation
 import OSLog
 import TabListCore
 
-private struct BackgroundThumbnailFingerprint: Equatable, Sendable {
-    let incarnation: UInt64
-    let title: String
-    let bounds: CGRect
-    let isMinimized: Bool
-    let isHidden: Bool
-    let isFullscreen: Bool
-
-    init(_ window: WindowRecord) {
-        incarnation = window.incarnation
-        title = window.windowTitle
-        bounds = window.bounds
-        isMinimized = window.isMinimized
-        isHidden = window.isHidden
-        isFullscreen = window.isFullscreen
-    }
-}
-
 private struct QueuedShortcutCycle: Sendable {
     let direction: SwitcherDirection
     let isRepeat: Bool
 }
 
-struct BackgroundThumbnailRefreshTracker: Sendable {
-    private struct Entry: Sendable {
-        let fingerprint: BackgroundThumbnailFingerprint
-        let capturedAt: ContinuousClock.Instant
-    }
-
-    private var entries: [WindowKey: Entry] = [:]
-
-    mutating func candidates(
-        from windows: [WindowRecord],
-        at now: ContinuousClock.Instant,
-        stableRefreshInterval: Duration
-    ) -> [WindowRecord] {
-        let retainedKeys = Set(windows.map(\.id))
-        entries = entries.filter { retainedKeys.contains($0.key) }
-
-        return windows.filter { window in
-            guard let entry = entries[window.id] else { return true }
-            if entry.fingerprint != BackgroundThumbnailFingerprint(window) {
-                return true
-            }
-            return entry.capturedAt.duration(to: now)
-                >= stableRefreshInterval
-        }
-    }
-
-    mutating func recordCaptured(
-        _ keys: Set<WindowKey>,
-        from windows: [WindowRecord],
-        at now: ContinuousClock.Instant
-    ) {
-        for window in windows where keys.contains(window.id) {
-            entries[window.id] = Entry(
-                fingerprint: BackgroundThumbnailFingerprint(window),
-                capturedAt: now
-            )
-        }
-    }
-
-    mutating func reset() {
-        entries.removeAll(keepingCapacity: true)
-    }
-}
-
-/// Main-actor orchestration around the pure switcher reducer.
-///
-/// The coordinator never asks WindowServer or Accessibility for data on the
-/// main thread. It presents immutable registry snapshots and discards all
-/// generation-bound work after a session ends.
+/// Owns one switcher session: it turns shortcut input into reducer actions and
+/// performs the effects the reducer returns.
 @MainActor
 final class SwitcherSessionCoordinator {
-    var onCompatibilityStatusChanged: (() -> Void)?
-
     private static let signposter = OSSignposter(
-        subsystem: "com.haagjjan.TabList",
+        subsystem: TabListLog.subsystem,
         category: "switcher-performance"
     )
+    private static let iconPointSize: CGFloat = 32
+    private static let sessionPollInterval = Duration.milliseconds(400)
 
     private let snapshotProvider: any WindowSnapshotProviding
     private let focusHistoryProvider: any WindowFocusHistoryProviding
@@ -91,18 +26,13 @@ final class SwitcherSessionCoordinator {
     private let shortcutService: GlobalShortcutService
     private let iconCache: any AppIconProviding
     private let panelController: SwitcherPanelController
-    private let settingsProvider: () -> SettingsV1
-    private let thumbnailFactory: () -> any ThumbnailProviding
-    private let backgroundRefreshClock = ContinuousClock()
+    private let settingsProvider: () -> TabListSettings
 
     private var state = SwitcherSessionState()
-    private var thumbnailService: (any ThumbnailProviding)?
     private var preparationTask: Task<Void, Never>?
     private var renderingTask: Task<Void, Never>?
-    private var captureTask: Task<Void, Never>?
     private var registryPollingTask: Task<Void, Never>?
     private var focusResolutionTask: Task<Void, Never>?
-    private var backgroundRefreshTask: Task<Void, Never>?
 
     private var sessionGeneration: UInt64 = 0
     private var resolvingInitialFocus = false
@@ -111,9 +41,6 @@ final class SwitcherSessionCoordinator {
     private var prefetchedOpeningSnapshot: WindowSnapshot?
     private var sessionPointerDisplayID: CGDirectDisplayID?
     private var appearanceSignpost: OSSignpostIntervalState?
-    private var thumbnailCaptureIsAuthorized = false
-    private var backgroundThumbnailTracker =
-        BackgroundThumbnailRefreshTracker()
 
     init(
         snapshotProvider: any WindowSnapshotProviding,
@@ -122,10 +49,7 @@ final class SwitcherSessionCoordinator {
         shortcutService: GlobalShortcutService,
         iconCache: any AppIconProviding,
         panelController: SwitcherPanelController,
-        settingsProvider: @escaping () -> SettingsV1,
-        thumbnailFactory: @escaping () -> any ThumbnailProviding = {
-            ThumbnailService()
-        }
+        settingsProvider: @escaping () -> TabListSettings
     ) {
         self.snapshotProvider = snapshotProvider
         self.focusHistoryProvider = focusHistoryProvider
@@ -134,7 +58,6 @@ final class SwitcherSessionCoordinator {
         self.iconCache = iconCache
         self.panelController = panelController
         self.settingsProvider = settingsProvider
-        self.thumbnailFactory = thumbnailFactory
 
         panelController.onActivate = { [weak self] key in
             self?.activateFromPointer(key)
@@ -147,10 +70,8 @@ final class SwitcherSessionCoordinator {
     deinit {
         preparationTask?.cancel()
         renderingTask?.cancel()
-        captureTask?.cancel()
         registryPollingTask?.cancel()
         focusResolutionTask?.cancel()
-        backgroundRefreshTask?.cancel()
     }
 
     var isActive: Bool {
@@ -171,11 +92,7 @@ final class SwitcherSessionCoordinator {
                     )
                 )
             } else {
-                apply(
-                    isRepeat
-                        ? .repeatedCycle(direction)
-                        : .cycle(direction)
-                )
+                apply(isRepeat ? .repeatedCycle(direction) : .cycle(direction))
             }
         case .commit:
             if resolvingInitialFocus {
@@ -191,82 +108,27 @@ final class SwitcherSessionCoordinator {
     }
 
     func cancel() {
-        if resolvingInitialFocus {
-            resolvingInitialFocus = false
-            focusResolutionTask?.cancel()
-            focusResolutionTask = nil
-            queuedDirectionsBeforeBegin.removeAll(keepingCapacity: true)
-            commitWhenPrepared = false
-            sessionPointerDisplayID = nil
-            sessionGeneration &+= 1
-            shortcutService.setSessionActive(false)
-            endAppearanceSignpost()
+        guard resolvingInitialFocus else {
+            apply(.cancel)
             return
         }
-        apply(.cancel)
+        resolvingInitialFocus = false
+        focusResolutionTask?.cancel()
+        focusResolutionTask = nil
+        queuedDirectionsBeforeBegin.removeAll(keepingCapacity: true)
+        commitWhenPrepared = false
+        sessionPointerDisplayID = nil
+        sessionGeneration &+= 1
+        shortcutService.setSessionActive(false)
+        endAppearanceSignpost()
     }
 
-    func presentationSettingsChanged() {
-        guard settingsProvider().presentation != .thumbnails else {
-            if state.phase == .visible {
-                scheduleRendering(present: true)
-                if thumbnailCaptureIsAuthorized {
-                    scheduleThumbnailRefresh()
-                }
-            }
-            return
-        }
-        captureTask?.cancel()
-        captureTask = nil
-        if let thumbnailService {
-            Task { await thumbnailService.cancelPending() }
-        }
-        if state.phase == .visible {
-            scheduleRendering(present: true)
-        }
-    }
-
-    func updateThumbnailCaptureAuthorization(_ isAuthorized: Bool) {
-        guard thumbnailCaptureIsAuthorized != isAuthorized else { return }
-        thumbnailCaptureIsAuthorized = isAuthorized
-
-        guard !isAuthorized else {
-            if state.phase == .visible,
-               settingsProvider().presentation == .thumbnails {
-                scheduleRendering(present: true)
-                scheduleThumbnailRefresh()
-            }
-            return
-        }
-
-        captureTask?.cancel()
-        captureTask = nil
-        backgroundRefreshTask?.cancel()
-        backgroundRefreshTask = nil
-        backgroundThumbnailTracker.reset()
-        renderingTask?.cancel()
-        renderingTask = nil
-
-        if state.phase == .visible,
-           settingsProvider().presentation == .thumbnails {
-            panelController.update(
-                items: makeImmediateDisplayItems(
-                    state.items,
-                    presentation: .thumbnails
-                ),
-                selectedIndex: state.selectedIndex ?? 0
-            )
-        }
-
-        if let thumbnailService {
-            Task {
-                await thumbnailService.purge()
-            }
-        }
+    func appearanceSettingsChanged() {
+        guard state.phase == .visible else { return }
+        scheduleRendering(present: true)
     }
 
     func warmCaches() {
-        let presentation = settingsProvider().presentation
         Task(priority: .utility) { [weak self, snapshotProvider] in
             let snapshot = await snapshotProvider.snapshot(
                 forceRefreshIfStale: false
@@ -281,75 +143,7 @@ final class SwitcherSessionCoordinator {
                 _ = await self.iconCache.icon(
                     for: window.bundleIdentifier,
                     bundleURL: window.bundleURL,
-                    targetSize: presentation == .titles ? 32 : 128
-                )
-            }
-        }
-    }
-
-    func updateBackgroundRefresh(enabled: Bool) {
-        let shouldCancelBackgroundCaptures =
-            backgroundRefreshTask != nil && !isActive
-        backgroundRefreshTask?.cancel()
-        backgroundRefreshTask = nil
-        backgroundThumbnailTracker.reset()
-        if shouldCancelBackgroundCaptures, let thumbnailService {
-            Task { await thumbnailService.cancelPending() }
-        }
-        let settings = settingsProvider()
-        guard enabled,
-              thumbnailCaptureIsAuthorized,
-              settings.presentation == .thumbnails,
-              settings.refreshThumbnailsInBackground
-        else {
-            return
-        }
-
-        let service = thumbnailProvider()
-        backgroundRefreshTask = Task(priority: .utility) {
-            [weak self, snapshotProvider] in
-            while !Task.isCancelled {
-                do {
-                    try await ContinuousClock().sleep(for: .seconds(30))
-                } catch {
-                    return
-                }
-                guard let self, !self.isActive else { continue }
-                let snapshot = await snapshotProvider.snapshot(
-                    forceRefreshIfStale: false
-                )
-                guard !Task.isCancelled,
-                      !self.isActive,
-                      self.settingsProvider().presentation == .thumbnails,
-                      self.settingsProvider().refreshThumbnailsInBackground
-                else {
-                    continue
-                }
-                let visible = snapshot.windows.filter { window in
-                    !Set(window.spaceIDs).isDisjoint(
-                        with: snapshot.visibleSpaceIDs
-                    )
-                }
-                let boundedVisible = Array(visible.prefix(24))
-                let changed = self.backgroundThumbnailTracker.candidates(
-                    from: boundedVisible,
-                    at: self.backgroundRefreshClock.now,
-                    stableRefreshInterval: .seconds(300)
-                )
-                let keys = changed.map(\.id)
-                guard !keys.isEmpty else { continue }
-                let captured = await service.refresh(
-                    changed,
-                    priority: keys,
-                    targetSize: Self.thumbnailTargetSize(
-                        for: self.settingsProvider().panelSize
-                    )
-                )
-                guard !Task.isCancelled, !self.isActive else { continue }
-                self.backgroundThumbnailTracker.recordCaptured(
-                    captured,
-                    from: boundedVisible,
-                    at: self.backgroundRefreshClock.now
+                    targetSize: Self.iconPointSize
                 )
             }
         }
@@ -357,11 +151,6 @@ final class SwitcherSessionCoordinator {
 
     func handleMemoryPressure() {
         iconCache.purgeMemory()
-        backgroundThumbnailTracker.reset()
-        captureTask?.cancel()
-        captureTask = nil
-        guard let thumbnailService else { return }
-        Task { await thumbnailService.purge() }
     }
 
     func shutdown() {
@@ -373,9 +162,6 @@ final class SwitcherSessionCoordinator {
         prefetchedOpeningSnapshot = nil
         sessionPointerDisplayID = nil
         stopSessionWork()
-        backgroundRefreshTask?.cancel()
-        backgroundRefreshTask = nil
-        backgroundThumbnailTracker.reset()
         panelController.hide()
         shortcutService.setSessionActive(false)
         endAppearanceSignpost()
@@ -402,12 +188,8 @@ final class SwitcherSessionCoordinator {
             async let snapshotTask = snapshotProvider.snapshot(
                 forceRefreshIfStale: false
             )
-            async let focusedTask =
-                focusHistoryProvider.lastFocusedWindowKey()
-            let (snapshot, lastFocusedKey) = await (
-                snapshotTask,
-                focusedTask
-            )
+            async let focusedTask = focusHistoryProvider.lastFocusedWindowKey()
+            let (snapshot, lastFocusedKey) = await (snapshotTask, focusedTask)
 
             guard let self,
                   !Task.isCancelled,
@@ -426,13 +208,12 @@ final class SwitcherSessionCoordinator {
             let currentFocus = lastFocusedKey?.pid == frontmostPID
                 ? lastFocusedKey
                 : fallbackFocus
-            let focus = FocusSnapshot(
-                applicationPID: frontmostPID,
-                windowKey: currentFocus
-            )
             self.apply(
                 .begin(
-                    originalFocus: focus,
+                    originalFocus: FocusSnapshot(
+                        applicationPID: frontmostPID,
+                        windowKey: currentFocus
+                    ),
                     initialDirection: reverse ? .backward : .forward
                 )
             )
@@ -498,29 +279,14 @@ final class SwitcherSessionCoordinator {
                 startRegistryPolling()
             case .reloadPanel:
                 scheduleRendering(present: false)
-                scheduleThumbnailRefresh()
             case let .selectionChanged(index):
-                Self.signposter.emitEvent(
-                    "Selection Changed",
-                    "index: \(index, privacy: .public)"
-                )
                 panelController.select(index: index)
-                if captureTask != nil {
-                    scheduleThumbnailRefresh()
-                }
             case .dismissPanel:
                 panelController.hide()
                 shortcutService.setSessionActive(false)
-                captureTask?.cancel()
-                captureTask = nil
                 registryPollingTask?.cancel()
                 registryPollingTask = nil
-                if let thumbnailService {
-                    Task { await thumbnailService.cancelPending() }
-                }
-                if state.phase == .cancelling
-                    || state.phase == .committing
-                {
+                if state.phase == .cancelling || state.phase == .committing {
                     apply(.panelDismissed)
                 }
             case let .activate(key):
@@ -582,7 +348,6 @@ final class SwitcherSessionCoordinator {
             }
             // A cached snapshot with no alternative must not end the session:
             // a just-created window may not have reached the registry yet.
-            // Remain in `preparing` until the requested forced refresh decides.
             requiresUnconditionalRefresh = true
         }
 
@@ -639,7 +404,7 @@ final class SwitcherSessionCoordinator {
 
     private func scheduleReconciliation(
         generation: UInt64,
-        settings: SettingsV1,
+        settings: TabListSettings,
         pointerDisplayID: CGDirectDisplayID?,
         forceRefreshIfStale: Bool
     ) {
@@ -658,21 +423,17 @@ final class SwitcherSessionCoordinator {
                 self.cancel()
                 return
             }
-            guard
-                  fresh.generation >
-                    (self.state.snapshotGeneration ?? 0)
-            else {
+            guard fresh.generation > (self.state.snapshotGeneration ?? 0) else {
                 return
             }
-            let candidates = WindowSelectionPipeline.candidates(
-                from: fresh,
-                settings: settings,
-                pointerDisplayID: pointerDisplayID
-            )
             self.apply(
                 .registryUpdated(
                     snapshotGeneration: fresh.generation,
-                    orderedItems: candidates
+                    orderedItems: WindowSelectionPipeline.candidates(
+                        from: fresh,
+                        settings: settings,
+                        pointerDisplayID: pointerDisplayID
+                    )
                 )
             )
         }
@@ -683,142 +444,39 @@ final class SwitcherSessionCoordinator {
         let generation = sessionGeneration
         let windows = state.items
         let selectedIndex = state.selectedIndex ?? 0
-        let settings = settingsProvider()
+        let theme = settingsProvider().theme
 
-        let immediateItems: [SwitcherDisplayItem]?
         if present {
-            let items = makeImmediateDisplayItems(
-                windows,
-                presentation: settings.presentation
-            )
-            immediateItems = items
             panelController.show(
-                items: items,
+                items: makeImmediateDisplayItems(windows),
                 selectedIndex: selectedIndex,
-                presentation: settings.presentation,
-                panelSize: settings.panelSize,
-                theme: settings.theme,
+                theme: theme,
                 displayID: sessionPointerDisplayID
             )
             endAppearanceSignpost()
-            scheduleThumbnailRefresh()
-        } else {
-            immediateItems = nil
         }
 
         renderingTask = Task { [weak self] in
             guard let self else { return }
-            if let immediateItems {
-                await self.progressivelyHydrateDisplayItems(
-                    windows,
-                    initialItems: immediateItems,
-                    selectedIndex: selectedIndex,
-                    presentation: settings.presentation,
-                    generation: generation
-                )
-                return
-            }
-            let displayItems = await self.makeDisplayItems(
-                windows,
-                presentation: settings.presentation
-            )
+            let items = await self.makeDisplayItems(windows)
             guard !Task.isCancelled,
                   generation == self.sessionGeneration,
                   self.state.phase == .visible
             else {
                 return
             }
-
             self.panelController.update(
-                items: displayItems,
+                items: items,
                 selectedIndex: self.state.selectedIndex ?? selectedIndex
             )
         }
     }
 
-    private func progressivelyHydrateDisplayItems(
-        _ windows: [WindowRecord],
-        initialItems: [SwitcherDisplayItem],
-        selectedIndex: Int,
-        presentation: PresentationMode,
-        generation: UInt64
-    ) async {
-        guard windows.count == initialItems.count else { return }
-        let thumbnails = presentation == .thumbnails
-            && thumbnailCaptureIsAuthorized
-            ? thumbnailProvider()
-            : nil
-        var displayItems = initialItems
-        let order = hydrationOrder(
-            itemCount: windows.count,
-            selectedIndex: selectedIndex
-        )
-
-        for (offset, index) in order.enumerated() {
-            guard !Task.isCancelled,
-                  generation == sessionGeneration,
-                  state.phase == .visible else {
-                return
-            }
-            let window = windows[index]
-            let icon = await iconCache.icon(
-                for: window.bundleIdentifier,
-                bundleURL: window.bundleURL,
-                targetSize: presentation == .titles ? 32 : 128
-            )
-            let thumbnail = await thumbnails?.cachedThumbnail(for: window)
-            displayItems[index] = SwitcherDisplayItem(
-                window: window,
-                icon: icon,
-                thumbnail: thumbnail
-            )
-
-            if offset % 6 == 5 || offset == order.count - 1 {
-                guard !Task.isCancelled,
-                      generation == sessionGeneration,
-                      state.phase == .visible else {
-                    return
-                }
-                panelController.update(
-                    items: displayItems,
-                    selectedIndex: state.selectedIndex ?? selectedIndex
-                )
-                await Task.yield()
-            }
-        }
-    }
-
-    private func hydrationOrder(
-        itemCount: Int,
-        selectedIndex: Int
-    ) -> [Int] {
-        guard itemCount > 0 else { return [] }
-        let selected = min(max(0, selectedIndex), itemCount - 1)
-        var result = [selected]
-        if itemCount > 1 {
-            let previous = (selected - 1 + itemCount) % itemCount
-            let next = (selected + 1) % itemCount
-            result.append(previous)
-            if next != previous {
-                result.append(next)
-            }
-        }
-        let prioritized = Set(result)
-        result.append(
-            contentsOf: (0..<itemCount).filter {
-                !prioritized.contains($0)
-            }
-        )
-        return result
-    }
-
     private func makeImmediateDisplayItems(
-        _ windows: [WindowRecord],
-        presentation: PresentationMode
+        _ windows: [WindowRecord]
     ) -> [SwitcherDisplayItem] {
-        let targetSize: CGFloat = presentation == .titles ? 32 : 128
         let placeholder = iconCache.placeholderIcon(
-            targetSize: targetSize
+            targetSize: Self.iconPointSize
         )
         return windows.map { window in
             SwitcherDisplayItem(
@@ -826,138 +484,38 @@ final class SwitcherSessionCoordinator {
                 icon: iconCache.cachedIcon(
                     for: window.bundleIdentifier,
                     bundleURL: window.bundleURL,
-                    targetSize: targetSize
-                ) ?? placeholder,
-                thumbnail: nil
+                    targetSize: Self.iconPointSize
+                ) ?? placeholder
             )
         }
     }
 
     private func makeDisplayItems(
-        _ windows: [WindowRecord],
-        presentation: PresentationMode
+        _ windows: [WindowRecord]
     ) async -> [SwitcherDisplayItem] {
-        let thumbnails = presentation == .thumbnails
-            && thumbnailCaptureIsAuthorized
-            ? thumbnailProvider()
-            : nil
-        var displayItems: [SwitcherDisplayItem] = []
-        displayItems.reserveCapacity(windows.count)
+        var icons: [String: NSImage] = [:]
+        var items: [SwitcherDisplayItem] = []
+        items.reserveCapacity(windows.count)
 
         for window in windows {
             guard !Task.isCancelled else { return [] }
-            let icon = await iconCache.icon(
-                for: window.bundleIdentifier,
-                bundleURL: window.bundleURL,
-                targetSize: presentation == .titles ? 32 : 128
-            )
-            let thumbnail = await thumbnails?.cachedThumbnail(for: window)
-            displayItems.append(
-                SwitcherDisplayItem(
-                    window: window,
-                    icon: icon,
-                    thumbnail: thumbnail
+            let identity = window.bundleIdentifier
+                ?? window.bundleURL?.standardizedFileURL.path
+                ?? "pid:\(window.id.pid)"
+            let icon: NSImage
+            if let cached = icons[identity] {
+                icon = cached
+            } else {
+                icon = await iconCache.icon(
+                    for: window.bundleIdentifier,
+                    bundleURL: window.bundleURL,
+                    targetSize: Self.iconPointSize
                 )
-            )
-        }
-        return displayItems
-    }
-
-    private func scheduleThumbnailRefresh() {
-        let settings = settingsProvider()
-        guard thumbnailCaptureIsAuthorized,
-              settings.presentation == .thumbnails,
-              state.phase == .visible,
-              !state.items.isEmpty
-        else {
-            return
-        }
-
-        captureTask?.cancel()
-        let generation = sessionGeneration
-        let service = thumbnailProvider()
-        let windows = state.items
-        let keys = windows.map(\.id)
-        let priority = thumbnailPriority()
-        let plan = ThumbnailCapturePlan(
-            allKeys: keys,
-            priorityKeys: priority.isEmpty
-                ? Array(keys.prefix(3))
-                : priority,
-            visibleKeys: panelController.visibleWindowKeys
-        )
-        let targetSize = panelController.thumbnailCaptureTargetSize
-            ?? Self.thumbnailTargetSize(
-                for: settings.panelSize,
-                backingScaleFactor: panelController.backingScaleFactor
-            )
-
-        captureTask = Task { [weak self] in
-            await service.cancelPending()
-            _ = await service.refresh(
-                Self.windows(
-                    matching: plan.immediate,
-                    in: windows
-                ),
-                priority: plan.immediate,
-                targetSize: targetSize
-            )
-            guard let self,
-                  !Task.isCancelled,
-                  generation == self.sessionGeneration,
-                  self.state.phase == .visible
-            else {
-                return
+                icons[identity] = icon
             }
-            self.scheduleRendering(present: false)
-
-            if !plan.visible.isEmpty {
-                _ = await service.refresh(
-                    Self.windows(
-                        matching: plan.visible,
-                        in: windows
-                    ),
-                    priority: plan.visible,
-                    targetSize: targetSize
-                )
-                guard !Task.isCancelled,
-                      generation == self.sessionGeneration,
-                      self.state.phase == .visible
-                else {
-                    return
-                }
-                self.scheduleRendering(present: false)
-            }
-
-            guard !plan.remaining.isEmpty else { return }
-            _ = await service.refresh(
-                Self.windows(
-                    matching: plan.remaining,
-                    in: windows
-                ),
-                priority: [],
-                targetSize: targetSize
-            )
-            guard !Task.isCancelled,
-                  generation == self.sessionGeneration,
-                  self.state.phase == .visible
-            else {
-                return
-            }
-            self.scheduleRendering(present: false)
+            items.append(SwitcherDisplayItem(window: window, icon: icon))
         }
-    }
-
-    private static func windows(
-        matching keys: [WindowKey],
-        in windows: [WindowRecord]
-    ) -> [WindowRecord] {
-        let windowsByKey = windows.reduce(
-            into: [WindowKey: WindowRecord]()
-        ) { result, window in
-            result[window.id] = window
-        }
-        return keys.compactMap { windowsByKey[$0] }
+        return items
     }
 
     private func startRegistryPolling() {
@@ -967,7 +525,7 @@ final class SwitcherSessionCoordinator {
             while !Task.isCancelled {
                 do {
                     try await ContinuousClock().sleep(
-                        for: .milliseconds(250)
+                        for: Self.sessionPollInterval
                     )
                 } catch {
                     return
@@ -993,21 +551,18 @@ final class SwitcherSessionCoordinator {
                     self.cancel()
                     return
                 }
-                guard
-                      snapshot.generation >
-                        (self.state.snapshotGeneration ?? 0)
-                else {
+                guard snapshot.generation
+                    > (self.state.snapshotGeneration ?? 0) else {
                     continue
                 }
-                let candidates = WindowSelectionPipeline.candidates(
-                    from: snapshot,
-                    settings: self.settingsProvider(),
-                    pointerDisplayID: self.sessionPointerDisplayID
-                )
                 self.apply(
                     .registryUpdated(
                         snapshotGeneration: snapshot.generation,
-                        orderedItems: candidates
+                        orderedItems: WindowSelectionPipeline.candidates(
+                            from: snapshot,
+                            settings: self.settingsProvider(),
+                            pointerDisplayID: self.sessionPointerDisplayID
+                        )
                     )
                 )
             }
@@ -1026,12 +581,7 @@ final class SwitcherSessionCoordinator {
         Task { [weak self, windowActions] in
             let result = await windowActions.activate(target)
             Self.signposter.endInterval("Window Activation", interval)
-            guard let self,
-                  generation == self.sessionGeneration
-            else {
-                return
-            }
-            self.onCompatibilityStatusChanged?()
+            guard let self, generation == self.sessionGeneration else { return }
             self.apply(.activationCompleted(result))
         }
     }
@@ -1045,45 +595,12 @@ final class SwitcherSessionCoordinator {
         let generation = sessionGeneration
         Task { [weak self, windowActions] in
             let result = await windowActions.close(target)
-            guard let self,
-                  generation == self.sessionGeneration
-            else {
-                return
-            }
+            guard let self, generation == self.sessionGeneration else { return }
             TabListLog.windowActions.debug(
-                "Close completed for pid \(key.pid, privacy: .private(mask: .hash)) window \(key.windowID, privacy: .private(mask: .hash)) result \(result.diagnosticCode, privacy: .public)"
+                "Close completed for pid \(key.pid, privacy: .private(mask: .hash)) result \(result.diagnosticCode, privacy: .public)"
             )
             self.apply(.closeCompleted(key: key, result: result))
         }
-    }
-
-    private func thumbnailProvider() -> any ThumbnailProviding {
-        if let thumbnailService {
-            return thumbnailService
-        }
-        let service = thumbnailFactory()
-        thumbnailService = service
-        return service
-    }
-
-    private func thumbnailPriority() -> [WindowKey] {
-        guard let selectedIndex = state.selectedIndex,
-              state.items.indices.contains(selectedIndex)
-        else {
-            return []
-        }
-
-        var result = [state.items[selectedIndex].id]
-        if state.items.count > 1 {
-            let previous = (selectedIndex - 1 + state.items.count)
-                % state.items.count
-            let next = (selectedIndex + 1) % state.items.count
-            result.append(state.items[previous].id)
-            if next != previous {
-                result.append(state.items[next].id)
-            }
-        }
-        return result
     }
 
     private func stopSessionWork() {
@@ -1091,21 +608,13 @@ final class SwitcherSessionCoordinator {
         preparationTask = nil
         renderingTask?.cancel()
         renderingTask = nil
-        captureTask?.cancel()
-        captureTask = nil
         registryPollingTask?.cancel()
         registryPollingTask = nil
-        if let thumbnailService {
-            Task { await thumbnailService.cancelPending() }
-        }
     }
 
     private func endAppearanceSignpost() {
         guard let appearanceSignpost else { return }
-        Self.signposter.endInterval(
-            "Switcher Appearance",
-            appearanceSignpost
-        )
+        Self.signposter.endInterval("Switcher Appearance", appearanceSignpost)
         self.appearanceSignpost = nil
     }
 
@@ -1116,23 +625,8 @@ final class SwitcherSessionCoordinator {
         ) else {
             return nil
         }
-        let screenNumberKey = NSDeviceDescriptionKey("NSScreenNumber")
-        return (screen.deviceDescription[screenNumberKey] as? NSNumber)
+        let key = NSDeviceDescriptionKey("NSScreenNumber")
+        return (screen.deviceDescription[key] as? NSNumber)
             .map { CGDirectDisplayID($0.uint32Value) }
-    }
-
-    private static func thumbnailTargetSize(
-        for size: PanelSize,
-        backingScaleFactor: CGFloat = 2
-    ) -> CGSize {
-        let scale = max(1, backingScaleFactor)
-        switch size {
-        case .small:
-            return CGSize(width: 240 * scale, height: 160 * scale)
-        case .medium, .auto:
-            return CGSize(width: 300 * scale, height: 200 * scale)
-        case .large:
-            return CGSize(width: 360 * scale, height: 240 * scale)
-        }
     }
 }
