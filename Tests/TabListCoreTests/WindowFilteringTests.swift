@@ -27,7 +27,7 @@ struct WindowFilteringTests {
 
     @Test
     func testStateFiltersExcludeOnlyRequestedStates() {
-        var settings = SettingsV1.default
+        var settings = TabListSettings.default
         settings.includeMinimized = false
         settings.includeHiddenApps = false
         settings.includeFullscreen = false
@@ -54,15 +54,11 @@ struct WindowFilteringTests {
     }
 
     @Test
-    func testNonstandardAndExcludedApplicationsAreRejected() {
-        var settings = SettingsV1.default
+    func testExcludedApplicationsAreRejectedCaseInsensitively() {
+        var settings = TabListSettings.default
         settings.excludedBundleIdentifiers = ["COM.EXAMPLE.APP"]
         let excluded = TestFixtures.window(1)
-        let nonstandard = TestFixtures.window(
-            2,
-            bundleIdentifier: "com.other.App",
-            isStandardWindow: false
-        )
+        let other = TestFixtures.window(2, bundleIdentifier: "com.other.App")
         let context = WindowFilterContext(
             visibleSpaceIDs: [1],
             pointerDisplayID: 10
@@ -75,37 +71,17 @@ struct WindowFilteringTests {
                 context: context
             )
         )
-        XCTAssertFalse(
-            WindowFilter.includes(
-                nonstandard,
-                settings: settings,
-                context: context
-            )
+        XCTAssertTrue(
+            WindowFilter.includes(other, settings: settings, context: context)
         )
     }
 
     @Test
-    func testUnresolvedWindowIdentityIsNeverSelectable() {
-        let unresolved = TestFixtures.window(1, isActionable: false)
-
-        XCTAssertFalse(
-            WindowFilter.includes(
-                unresolved,
-                settings: .default,
-                context: WindowFilterContext(
-                    visibleSpaceIDs: [1],
-                    pointerDisplayID: 10
-                )
-            )
-        )
-    }
-
-    @Test
-    func testVisibleSpaceScopeRequiresAnIntersectingKnownSpace() {
-        var settings = SettingsV1.default
+    func testVisibleSpaceScopeExcludesOtherSpacesButKeepsUnknownMembership() {
+        var settings = TabListSettings.default
         settings.spaceScope = .visibleSpaces
         let visible = TestFixtures.window(1, spaceIDs: [1, 2])
-        let hidden = TestFixtures.window(2, spaceIDs: [3])
+        let elsewhere = TestFixtures.window(2, spaceIDs: [3])
         let unknown = TestFixtures.window(3, spaceIDs: [])
         let context = WindowFilterContext(
             visibleSpaceIDs: [2],
@@ -114,17 +90,17 @@ struct WindowFilteringTests {
 
         XCTAssertEqual(
             WindowFilter.filter(
-                [visible, hidden, unknown],
+                [visible, elsewhere, unknown],
                 settings: settings,
                 context: context
             ),
-            [visible]
+            [visible, unknown]
         )
     }
 
     @Test
-    func testPointerScreenScopeUsesPointerDisplayWhenKnown() {
-        var settings = SettingsV1.default
+    func testPointerScreenScopeExcludesOtherDisplaysButKeepsUnknownOnes() {
+        var settings = TabListSettings.default
         settings.screenScope = .pointerScreen
         let local = TestFixtures.window(1, displayID: 10)
         let remote = TestFixtures.window(2, displayID: 20)
@@ -139,13 +115,13 @@ struct WindowFilteringTests {
                     pointerDisplayID: 10
                 )
             ),
-            [local]
+            [local, unknown]
         )
     }
 
     @Test
     func testUnknownPointerDisplayFailsOpenInsteadOfEmptyingSwitcher() {
-        var settings = SettingsV1.default
+        var settings = TabListSettings.default
         settings.screenScope = .pointerScreen
         let windows = [
             TestFixtures.window(1, displayID: 10),
@@ -167,11 +143,13 @@ struct WindowFilteringTests {
 
     @Test
     func testSelectionPipelineFiltersThenSortsByWindowMRU() {
+        var settings = TabListSettings.default
+        settings.excludedBundleIdentifiers = ["com.excluded.App"]
         let older = TestFixtures.window(1, focusSequence: 10)
         let newest = TestFixtures.window(2, focusSequence: 30)
         let excluded = TestFixtures.window(
             3,
-            isStandardWindow: false,
+            bundleIdentifier: "com.excluded.App",
             focusSequence: 100
         )
         let snapshot = WindowSnapshot(
@@ -183,7 +161,7 @@ struct WindowFilteringTests {
         XCTAssertEqual(
             WindowSelectionPipeline.candidates(
                 from: snapshot,
-                settings: .default,
+                settings: settings,
                 pointerDisplayID: 10
             ),
             [newest, older]
@@ -236,7 +214,7 @@ struct WindowFilteringTests {
 
     @Test
     func testCombinedVisibleSpaceAndPointerScreenScopesRequireBoth() {
-        var settings = SettingsV1.default
+        var settings = TabListSettings.default
         settings.spaceScope = .visibleSpaces
         settings.screenScope = .pointerScreen
         let eligible = TestFixtures.window(
@@ -265,6 +243,102 @@ struct WindowFilteringTests {
                 )
             ),
             [eligible]
+        )
+    }
+}
+
+@Suite
+struct WindowFilterEdgeCaseTests {
+    private let context = WindowFilterContext(
+        visibleSpaceIDs: [1],
+        pointerDisplayID: 10
+    )
+
+    @Test
+    func testAWindowWithoutABundleIdentifierIsNeverExcludedByName() {
+        var settings = TabListSettings.default
+        settings.excludedBundleIdentifiers = ["com.example.App"]
+
+        XCTAssertTrue(
+            WindowFilter.includes(
+                TestFixtures.window(1, bundleIdentifier: nil),
+                settings: settings,
+                context: context
+            )
+        )
+    }
+
+    @Test
+    func testAnEmptyVisibleSpaceSetDoesNotEmptyTheSwitcher() {
+        var settings = TabListSettings.default
+        settings.spaceScope = .visibleSpaces
+        let windows = [
+            TestFixtures.window(1, spaceIDs: [4]),
+            TestFixtures.window(2, spaceIDs: [5]),
+        ]
+
+        XCTAssertEqual(
+            WindowFilter.filter(
+                windows,
+                settings: settings,
+                context: WindowFilterContext(
+                    visibleSpaceIDs: [],
+                    pointerDisplayID: nil
+                )
+            ),
+            windows
+        )
+    }
+
+    @Test
+    func testEveryStateFilterCanBeCombined() {
+        var settings = TabListSettings.default
+        settings.includeMinimized = false
+        settings.includeFullscreen = false
+        let mixed = TestFixtures.window(
+            1,
+            isMinimized: true,
+            isFullscreen: true
+        )
+
+        XCTAssertFalse(
+            WindowFilter.includes(
+                mixed,
+                settings: settings,
+                context: context
+            )
+        )
+    }
+
+    @Test
+    func testFilteringAnEmptyListIsEmptyRatherThanUndefined() {
+        XCTAssertTrue(
+            WindowFilter.filter(
+                [],
+                settings: .default,
+                context: context
+            ).isEmpty
+        )
+    }
+
+    @Test
+    func testThePipelineIsStableForWindowsThatHaveNeverBeenFocused() {
+        let windows = (1 ... 4).map {
+            TestFixtures.window(UInt32($0), focusSequence: 0)
+        }
+        let snapshot = WindowSnapshot(
+            generation: 1,
+            windows: windows,
+            visibleSpaceIDs: [1]
+        )
+
+        XCTAssertEqual(
+            WindowSelectionPipeline.candidates(
+                from: snapshot,
+                settings: .default,
+                pointerDisplayID: 10
+            ).map(\.id),
+            windows.map(\.id)
         )
     }
 }

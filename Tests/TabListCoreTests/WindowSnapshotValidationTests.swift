@@ -77,7 +77,6 @@ struct WindowSnapshotValidationTests {
             isMinimized: window.isMinimized,
             isHidden: window.isHidden,
             isFullscreen: window.isFullscreen,
-            isStandardWindow: window.isStandardWindow,
             isClosable: window.isClosable,
             lastFocusSequence: window.lastFocusSequence,
             incarnation: window.incarnation

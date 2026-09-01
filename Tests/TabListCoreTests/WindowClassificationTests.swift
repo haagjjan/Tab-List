@@ -5,15 +5,25 @@ import Testing
 @Suite
 struct WindowClassificationTests {
     @Test
-    func testStandardAndUntitledWindowFactsAreEligible() {
-        let input = TestFixtures.classificationInput()
+    func testStandardWindowFactsAreEligible() {
+        XCTAssertEqual(
+            WindowClassifier.classify(TestFixtures.classificationInput()),
+            .standard
+        )
+    }
+
+    @Test
+    func testMissingRoleAndSubroleFailOpen() {
+        let input = TestFixtures.classificationInput(role: nil, subrole: nil)
 
         XCTAssertEqual(WindowClassifier.classify(input), .standard)
     }
 
     @Test
-    func testMissingAccessibilityMetadataFallsBackToWindowServerFacts() {
-        let input = TestFixtures.classificationInput(role: nil, subrole: nil)
+    func testUnfamiliarSubroleIsAcceptedRatherThanDropped() {
+        let input = TestFixtures.classificationInput(
+            subrole: "AXSomethingNewInAFutureMacOS"
+        )
 
         XCTAssertEqual(WindowClassifier.classify(input), .standard)
     }
@@ -36,7 +46,7 @@ struct WindowClassificationTests {
     }
 
     @Test
-    func testUnknownActivationPolicyFailsOpenForPublicFallbacks() {
+    func testUnknownActivationPolicyFailsOpen() {
         var input = TestFixtures.classificationInput()
         input.ownerActivationPolicy = .unknown
 
@@ -52,25 +62,25 @@ struct WindowClassificationTests {
             .excluded(.ownApplication)
         )
 
-        var dock = TestFixtures.classificationInput(
-            titleIndependentOwnerName: "Dock"
-        )
+        var dock = TestFixtures.classificationInput(ownerName: "Dock")
         dock.ownerBundleIdentifier = "com.apple.dock"
         XCTAssertEqual(
             WindowClassifier.classify(dock),
             .excluded(.systemSurface)
         )
+
+        var windowManager = TestFixtures.classificationInput(
+            ownerName: "WindowManager"
+        )
+        windowManager.ownerBundleIdentifier = "com.apple.WindowManager"
+        XCTAssertEqual(
+            WindowClassifier.classify(windowManager),
+            .excluded(.systemSurface)
+        )
     }
 
     @Test
-    func testNonzeroLayersAndInvalidGeometryAreExcluded() {
-        var layered = TestFixtures.classificationInput()
-        layered.layer = 20
-        XCTAssertEqual(
-            WindowClassifier.classify(layered),
-            .excluded(.nonzeroLayer)
-        )
-
+    func testDegenerateGeometryIsExcluded() {
         var zeroSized = TestFixtures.classificationInput()
         zeroSized.bounds.size = .zero
         XCTAssertEqual(
@@ -85,52 +95,16 @@ struct WindowClassificationTests {
             .excluded(.invalidGeometry)
         )
 
-        var menuBarStrip = TestFixtures.classificationInput()
-        menuBarStrip.bounds = CGRect(
-            x: 0,
-            y: 0,
-            width: 1_512,
-            height: 33
-        )
+        var sliver = TestFixtures.classificationInput()
+        sliver.bounds = CGRect(x: 0, y: 0, width: 1_512, height: 8)
         XCTAssertEqual(
-            WindowClassifier.classify(menuBarStrip),
+            WindowClassifier.classify(sliver),
             .excluded(.invalidGeometry)
         )
     }
 
     @Test
-    func testTransparentAndSpecialSurfacesAreExcluded() {
-        var transparent = TestFixtures.classificationInput()
-        transparent.alpha = 0
-        XCTAssertEqual(
-            WindowClassifier.classify(transparent),
-            .excluded(.invisibleSurface)
-        )
-
-        var desktop = TestFixtures.classificationInput()
-        desktop.isDesktopElement = true
-        XCTAssertEqual(
-            WindowClassifier.classify(desktop),
-            .excluded(.desktopElement)
-        )
-
-        var notification = TestFixtures.classificationInput()
-        notification.isNotification = true
-        XCTAssertEqual(
-            WindowClassifier.classify(notification),
-            .excluded(.notification)
-        )
-
-        var inactiveTab = TestFixtures.classificationInput()
-        inactiveTab.isTabGroupChild = true
-        XCTAssertEqual(
-            WindowClassifier.classify(inactiveTab),
-            .excluded(.inactiveTab)
-        )
-    }
-
-    @Test
-    func testUtilityRolesAndSubrolesAreExcluded() {
+    func testPalettesAndUtilityRolesAreExcluded() {
         let menu = TestFixtures.classificationInput(
             role: "AXMenu",
             subrole: nil
@@ -141,27 +115,45 @@ struct WindowClassificationTests {
         )
 
         let floating = TestFixtures.classificationInput(
-            role: "AXWindow",
             subrole: "AXFloatingWindow"
         )
         XCTAssertEqual(
             WindowClassifier.classify(floating),
             .excluded(.unsupportedSubrole("AXFloatingWindow"))
         )
+
+        let unknown = TestFixtures.classificationInput(subrole: "AXUnknown")
+        XCTAssertEqual(
+            WindowClassifier.classify(unknown),
+            .excluded(.unsupportedSubrole("AXUnknown"))
+        )
     }
 
     @Test
-    func testDialogsAndSheetsAreEligible() {
+    func testDialogsAreEligible() {
         let dialog = TestFixtures.classificationInput(
             role: "AXDialog",
             subrole: "AXDialog"
         )
-        let sheet = TestFixtures.classificationInput(
-            role: "AXSheet",
+        let systemDialog = TestFixtures.classificationInput(
             subrole: "AXSystemDialog"
         )
 
         XCTAssertEqual(WindowClassifier.classify(dialog), .standard)
-        XCTAssertEqual(WindowClassifier.classify(sheet), .standard)
+        XCTAssertEqual(WindowClassifier.classify(systemDialog), .standard)
+    }
+
+    @Test
+    func testBrowserWindowWithoutSubroleIsEligible() {
+        let firefox = WindowClassificationInput(
+            ownerBundleIdentifier: "org.mozilla.firefox",
+            ownerName: "Firefox",
+            ownerActivationPolicy: .regular,
+            bounds: CGRect(x: 0, y: 33, width: 1_512, height: 867),
+            accessibilityRole: "AXWindow",
+            accessibilitySubrole: nil
+        )
+
+        XCTAssertEqual(WindowClassifier.classify(firefox), .standard)
     }
 }

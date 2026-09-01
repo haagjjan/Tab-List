@@ -35,24 +35,21 @@ struct MRUOrderingTests {
     }
 
     @Test
-    func testStartupSeedPlacesKnownVisibleWindowsBeforeOffSpaceWindows() {
-        let visibleFront = TestFixtures.key(1)
-        let offSpace = TestFixtures.key(2)
-        let visibleBack = TestFixtures.key(3)
+    func testStartupSeedPreservesDiscoveredStackingOrder() {
+        let front = TestFixtures.key(1)
+        let middle = TestFixtures.key(2)
+        let back = TestFixtures.key(3)
         var tracker = WindowMRUTracker()
 
-        tracker.seed(
-            frontToBack: [visibleFront, offSpace, visibleBack],
-            knownVisibleKeys: [visibleFront, visibleBack]
-        )
+        tracker.seed(frontToBack: [front, middle, back])
 
         XCTAssertGreaterThan(
-            tracker.sequence(for: visibleBack),
-            tracker.sequence(for: offSpace)
+            tracker.sequence(for: front),
+            tracker.sequence(for: middle)
         )
         XCTAssertGreaterThan(
-            tracker.sequence(for: visibleFront),
-            tracker.sequence(for: visibleBack)
+            tracker.sequence(for: middle),
+            tracker.sequence(for: back)
         )
     }
 
