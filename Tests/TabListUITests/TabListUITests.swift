@@ -47,9 +47,9 @@ final class TabListUITests: XCTestCase {
         )
         XCTAssertTrue(
             application.staticTexts[
-                "Window information and previews stay on this Mac. "
-                    + "Tab‑List has no analytics and never uploads window "
-                    + "titles or screenshots."
+                "Window information stays on this Mac. Tab‑List has no "
+                    + "analytics, never captures window content, and never "
+                    + "uploads window titles."
             ].exists
         )
         XCTAssertTrue(
@@ -58,7 +58,7 @@ final class TabListUITests: XCTestCase {
         )
     }
 
-    func testSettingsExposeAllVersionTwoSectionsAndModes() {
+    func testSettingsExposeEverySection() {
         let application = configuredApplication(
             showing: "--ui-testing-show-settings"
         )
@@ -80,12 +80,6 @@ final class TabListUITests: XCTestCase {
                 application.staticTexts[section].exists
                     || application.buttons[section].exists,
                 "Missing Settings section: \(section)"
-            )
-        }
-        for mode in ["Thumbnails", "App Icons", "Titles"] {
-            XCTAssertTrue(
-                application.descendants(matching: .any)[mode].exists,
-                "Missing presentation mode: \(mode)"
             )
         }
     }

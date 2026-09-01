@@ -26,7 +26,6 @@ enum AppTestFixtures {
         isMinimized: Bool = false,
         isHidden: Bool = false,
         isFullscreen: Bool = false,
-        isStandardWindow: Bool = true,
         isClosable: Bool = true,
         focusSequence: UInt64 = 0
     ) -> WindowRecord {
@@ -44,24 +43,8 @@ enum AppTestFixtures {
             isMinimized: isMinimized,
             isHidden: isHidden,
             isFullscreen: isFullscreen,
-            isStandardWindow: isStandardWindow,
             isClosable: isClosable,
             lastFocusSequence: focusSequence
-        )
-    }
-
-    static func candidate(
-        for window: WindowRecord,
-        isOnScreen: Bool
-    ) -> PublicWindowCandidate {
-        PublicWindowCandidate(
-            key: window.id,
-            ownerName: window.applicationName,
-            title: window.windowTitle,
-            bounds: window.bounds,
-            layer: 0,
-            alpha: 1,
-            isOnScreen: isOnScreen
         )
     }
 }
