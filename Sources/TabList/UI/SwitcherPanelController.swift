@@ -3,105 +3,35 @@ import CoreGraphics
 import TabListCore
 
 @MainActor
-private final class CenteredCollectionViewFlowLayout:
-    NSCollectionViewFlowLayout
-{
-    var itemCount = 0
-    var columnCount = 1
-    var centersIncompleteFinalRow = false
+private final class SwitcherTableView: NSTableView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
-    override func layoutAttributesForElements(
-        in rect: NSRect
-    ) -> [NSCollectionViewLayoutAttributes] {
-        super.layoutAttributesForElements(in: rect).map(adjusted)
-    }
-
-    override func layoutAttributesForItem(
-        at indexPath: IndexPath
-    ) -> NSCollectionViewLayoutAttributes? {
-        super.layoutAttributesForItem(at: indexPath).map(adjusted)
-    }
-
-    private func adjusted(
-        _ attributes: NSCollectionViewLayoutAttributes
-    ) -> NSCollectionViewLayoutAttributes {
-        guard centersIncompleteFinalRow,
-              attributes.representedElementCategory == .item,
-              columnCount > 1,
-              itemCount > 0,
-              let copy = attributes.copy()
-                as? NSCollectionViewLayoutAttributes
-        else {
-            return attributes
-        }
-        let lastRowCount = itemCount % columnCount
-        guard lastRowCount > 0,
-              let indexPath = attributes.indexPath,
-              indexPath.item >= itemCount - lastRowCount,
-              let collectionView
-        else {
-            return attributes
-        }
-        let rowWidth = (CGFloat(lastRowCount) * itemSize.width)
-            + (CGFloat(lastRowCount - 1) * minimumInteritemSpacing)
-        let centeredOrigin = max(
-            sectionInset.left,
-            (collectionView.bounds.width - rowWidth) / 2
-        )
-        copy.frame.origin.x += centeredOrigin - sectionInset.left
-        return copy
-    }
+    override var acceptsFirstResponder: Bool { false }
 }
 
+/// The switcher list. Rows are driven entirely by the session coordinator; the
+/// panel itself never activates the application or takes key focus.
 @MainActor
-final class SwitcherPanelController: NSWindowController, NSCollectionViewDelegate {
+final class SwitcherPanelController: NSWindowController,
+    NSTableViewDataSource,
+    NSTableViewDelegate
+{
     var onActivate: ((WindowKey) -> Void)?
     var onClose: ((WindowKey) -> Void)?
 
     private let scrollView = NSScrollView()
-    private let collectionView = NSCollectionView()
-    private let flowLayout = CenteredCollectionViewFlowLayout()
+    private let tableView = SwitcherTableView()
     private let feedbackLabel = NSTextField(labelWithString: "")
-    private var dataSource:
-        NSCollectionViewDiffableDataSource<Int, WindowKey>!
 
     private var items: [SwitcherDisplayItem] = []
-    private var itemsByKey: [WindowKey: SwitcherDisplayItem] = [:]
     private var selectedIndex: Int?
     private var pendingCloseKey: WindowKey?
-    private var currentPresentation: PresentationMode = .thumbnails
-    private var currentPanelSize: PanelSize = .auto
     private var currentTheme: ThemePreference = .system
     private var currentDisplayID: CGDirectDisplayID?
-    private var currentLayoutMetrics: PanelLayoutMetrics?
-
-    var backingScaleFactor: CGFloat {
-        window?.backingScaleFactor ?? 2
-    }
-
-    var thumbnailCaptureTargetSize: CGSize? {
-        currentLayoutMetrics?.previewViewportSize.map { viewport in
-            CGSize(
-                width: viewport.width * backingScaleFactor,
-                height: viewport.height * backingScaleFactor
-            )
-        }
-    }
-
-    var visibleWindowKeys: [WindowKey] {
-        collectionView.visibleItems()
-            .compactMap { collectionView.indexPath(for: $0) }
-            .sorted { $0.item < $1.item }
-            .compactMap { indexPath in
-                items.indices.contains(indexPath.item)
-                    ? items[indexPath.item].window.id
-                    : nil
-            }
-    }
 
     init() {
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 900, height: 540),
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 240),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: true
@@ -112,7 +42,12 @@ final class SwitcherPanelController: NSWindowController, NSCollectionViewDelegat
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
         panel.isMovable = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient, .ignoresCycle]
+        panel.collectionBehavior = [
+            .canJoinAllSpaces,
+            .fullScreenAuxiliary,
+            .transient,
+            .ignoresCycle,
+        ]
         panel.animationBehavior = .utilityWindow
         panel.isReleasedWhenClosed = false
         super.init(window: panel)
@@ -127,82 +62,168 @@ final class SwitcherPanelController: NSWindowController, NSCollectionViewDelegat
     func show(
         items: [SwitcherDisplayItem],
         selectedIndex: Int,
-        presentation: PresentationMode,
-        panelSize: PanelSize,
         theme: ThemePreference,
         displayID: CGDirectDisplayID?
     ) {
         guard !items.isEmpty, let panel = window else { return }
-        let cellStyleChanged =
-            currentPresentation != presentation || currentTheme != theme
-        let changedKeys = replaceItems(
-            items,
-            forceReload: cellStyleChanged
-        )
-        self.selectedIndex = min(max(0, selectedIndex), items.count - 1)
-        currentPresentation = presentation
-        currentPanelSize = panelSize
         currentTheme = theme
         currentDisplayID = displayID
+        self.items = items
+        self.selectedIndex = min(max(0, selectedIndex), items.count - 1)
 
         applyAppearance()
         resizeAndCenter(panel)
+        tableView.reloadData()
         panel.orderFrontRegardless()
-        applyDataSnapshot(reloading: changedKeys) { [weak self] in
-            self?.updateSelection(
-                scroll: true,
-                movement: .stationary
-            )
-        }
+        applySelection(movement: .stationary)
     }
 
     func update(items: [SwitcherDisplayItem], selectedIndex: Int) {
-        let changedKeys = replaceItems(items)
-        self.selectedIndex = items.isEmpty
-            ? nil
-            : min(max(0, selectedIndex), items.count - 1)
-        if items.isEmpty {
+        guard !items.isEmpty else {
             hide()
-        } else {
-            if let panel = window {
-                resizeAndCenter(panel)
-            }
-            applyDataSnapshot(reloading: changedKeys) { [weak self] in
-                self?.updateSelection(
-                    scroll: true,
-                    movement: .stationary
-                )
-            }
+            return
         }
+        let changed = SwitcherDisplayReloadPlanner.changedRows(
+            previous: self.items,
+            next: items
+        )
+        let countChanged = self.items.count != items.count
+        self.items = items
+        self.selectedIndex = min(max(0, selectedIndex), items.count - 1)
+
+        if let panel = window {
+            resizeAndCenter(panel)
+        }
+        if countChanged {
+            tableView.reloadData()
+        } else if !changed.isEmpty {
+            tableView.reloadData(
+                forRowIndexes: changed,
+                columnIndexes: IndexSet(integer: 0)
+            )
+        }
+        applySelection(movement: .stationary)
     }
 
     func select(index: Int) {
         guard items.indices.contains(index) else { return }
-        let movement = selectionMovement(
+        let movement = Self.movement(
             from: selectedIndex,
             to: index,
             itemCount: items.count
         )
         selectedIndex = index
-        updateSelection(scroll: true, movement: movement)
+        applySelection(movement: movement)
+    }
+
+    func setPendingClose(_ key: WindowKey?) {
+        let affected = IndexSet(
+            items.indices.filter {
+                items[$0].window.id == key
+                    || items[$0].window.id == pendingCloseKey
+            }
+        )
+        pendingCloseKey = key
+        feedbackLabel.isHidden = true
+        guard !affected.isEmpty else { return }
+        tableView.reloadData(
+            forRowIndexes: affected,
+            columnIndexes: IndexSet(integer: 0)
+        )
+        applySelection(movement: .stationary)
+    }
+
+    func showFeedback(_ message: String) {
+        feedbackLabel.stringValue = "  \(message)  "
+        feedbackLabel.isHidden = false
     }
 
     func hide() {
         window?.orderOut(nil)
         items.removeAll(keepingCapacity: true)
-        itemsByKey.removeAll(keepingCapacity: true)
         selectedIndex = nil
         pendingCloseKey = nil
         feedbackLabel.isHidden = true
-        applyDataSnapshot(reloading: [])
+        tableView.reloadData()
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        items.count
+    }
+
+    func tableView(
+        _ tableView: NSTableView,
+        rowViewForRow row: Int
+    ) -> NSTableRowView? {
+        SwitcherRowBackgroundView()
+    }
+
+    func tableView(
+        _ tableView: NSTableView,
+        viewFor tableColumn: NSTableColumn?,
+        row: Int
+    ) -> NSView? {
+        guard items.indices.contains(row) else { return nil }
+        let cell = tableView.makeView(
+            withIdentifier: SwitcherRowView.identifier,
+            owner: self
+        ) as? SwitcherRowView ?? {
+            let created = SwitcherRowView()
+            created.identifier = SwitcherRowView.identifier
+            return created
+        }()
+
+        let item = items[row]
+        cell.onClose = { [weak self] in
+            self?.onClose?(item.window.id)
+        }
+        cell.configure(
+            with: item,
+            position: row + 1,
+            total: items.count,
+            isSelected: row == selectedIndex,
+            isActionPending: item.window.id == pendingCloseKey
+        )
+        return cell
+    }
+
+    func tableView(
+        _ tableView: NSTableView,
+        shouldSelectRow row: Int
+    ) -> Bool {
+        items.indices.contains(row)
     }
 
     private func configureContent() {
         guard let contentView = window?.contentView else { return }
         contentView.wantsLayer = true
-        contentView.layer?.cornerRadius = 16
+        contentView.layer?.cornerRadius = PanelLayoutCalculator.cornerRadius
         contentView.layer?.masksToBounds = true
 
+        let column = NSTableColumn(identifier: .init("window"))
+        column.resizingMask = .autoresizingMask
+        column.minWidth = 200
+        column.width = PanelLayoutCalculator.maximumWidth
+        tableView.addTableColumn(column)
+        tableView.headerView = nil
+        tableView.autoresizingMask = [.width]
+        tableView.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
+        tableView.backgroundColor = .clear
+        tableView.rowHeight = PanelLayoutCalculator.rowHeight
+        tableView.intercellSpacing = .zero
+        tableView.style = .plain
+        tableView.selectionHighlightStyle = .regular
+        tableView.allowsEmptySelection = true
+        tableView.allowsMultipleSelection = false
+        tableView.usesAutomaticRowHeights = false
+        tableView.dataSource = self
+        tableView.delegate = self
+        tableView.target = self
+        tableView.action = #selector(rowClicked)
+        tableView.setAccessibilityRole(.table)
+        tableView.setAccessibilityLabel(String(localized: "Open windows"))
+
+        scrollView.documentView = tableView
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
@@ -210,61 +231,12 @@ final class SwitcherPanelController: NSWindowController, NSCollectionViewDelegat
         scrollView.scrollerStyle = .overlay
         scrollView.automaticallyAdjustsContentInsets = false
         scrollView.contentInsets = NSEdgeInsets(
-            top: 0,
+            top: PanelLayoutCalculator.outerPadding,
             left: 0,
-            bottom: 0,
+            bottom: PanelLayoutCalculator.outerPadding,
             right: 0
         )
         scrollView.translatesAutoresizingMaskIntoConstraints = false
-
-        flowLayout.minimumInteritemSpacing = 12
-        flowLayout.minimumLineSpacing = 12
-        flowLayout.sectionInset = NSEdgeInsets(
-            top: LayoutCalculator.outerPadding,
-            left: LayoutCalculator.outerPadding,
-            bottom: LayoutCalculator.outerPadding,
-            right: LayoutCalculator.outerPadding
-        )
-
-        collectionView.collectionViewLayout = flowLayout
-        collectionView.delegate = self
-        collectionView.isSelectable = true
-        collectionView.allowsMultipleSelection = false
-        collectionView.backgroundColors = [.clear]
-        collectionView.register(
-            SwitcherCollectionItem.self,
-            forItemWithIdentifier: SwitcherCollectionItem.identifier
-        )
-        dataSource = NSCollectionViewDiffableDataSource<Int, WindowKey>(
-            collectionView: collectionView
-        ) { [weak self] collectionView, indexPath, key in
-            guard let self,
-                  let item = self.itemsByKey[key],
-                  let cell = collectionView.makeItem(
-                      withIdentifier: SwitcherCollectionItem.identifier,
-                      for: indexPath
-                  ) as? SwitcherCollectionItem else {
-                return NSCollectionViewItem()
-            }
-            cell.configure(
-                with: item,
-                presentation: self.currentPresentation,
-                position: indexPath.item + 1,
-                total: self.items.count,
-                isActionPending: key == self.pendingCloseKey,
-                activateHandler: { [weak self] in
-                    self?.onActivate?(key)
-                },
-                closeHandler: { [weak self] in
-                    self?.onClose?(key)
-                }
-            )
-            cell.isSelected = indexPath.item == self.selectedIndex
-            return cell
-        }
-        collectionView.setAccessibilityRole(.list)
-        scrollView.documentView = collectionView
-
         contentView.addSubview(scrollView)
 
         feedbackLabel.font = .systemFont(ofSize: 12, weight: .semibold)
@@ -279,37 +251,63 @@ final class SwitcherPanelController: NSWindowController, NSCollectionViewDelegat
         contentView.addSubview(feedbackLabel)
 
         NSLayoutConstraint.activate([
-            scrollView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            scrollView.leadingAnchor.constraint(
+                equalTo: contentView.leadingAnchor
+            ),
+            scrollView.trailingAnchor.constraint(
+                equalTo: contentView.trailingAnchor
+            ),
             scrollView.topAnchor.constraint(equalTo: contentView.topAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor)
-            ,
+            scrollView.bottomAnchor.constraint(
+                equalTo: contentView.bottomAnchor
+            ),
+
             feedbackLabel.centerXAnchor.constraint(
                 equalTo: contentView.centerXAnchor
             ),
             feedbackLabel.bottomAnchor.constraint(
                 equalTo: contentView.bottomAnchor,
-                constant: -10
+                constant: -8
             ),
-            feedbackLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 360),
-            feedbackLabel.heightAnchor.constraint(greaterThanOrEqualToConstant: 30)
+            feedbackLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 380),
+            feedbackLabel.heightAnchor.constraint(
+                greaterThanOrEqualToConstant: 28
+            ),
         ])
     }
 
-    func setPendingClose(_ key: WindowKey?) {
-        let changed = Set([pendingCloseKey, key].compactMap { $0 })
-        pendingCloseKey = key
-        feedbackLabel.isHidden = true
-        applyDataSnapshot(reloading: changed)
+    @objc private func rowClicked() {
+        let row = tableView.clickedRow
+        guard items.indices.contains(row) else { return }
+        onActivate?(items[row].window.id)
     }
 
-    func showFeedback(_ message: String) {
-        feedbackLabel.stringValue = "  \(message)  "
-        feedbackLabel.isHidden = false
-        feedbackLabel.superview?.addSubview(
-            feedbackLabel,
-            positioned: .above,
-            relativeTo: scrollView
+    private func applySelection(movement: SelectionMovement) {
+        guard let selectedIndex, items.indices.contains(selectedIndex) else {
+            tableView.deselectAll(nil)
+            return
+        }
+        tableView.selectRowIndexes(
+            IndexSet(integer: selectedIndex),
+            byExtendingSelection: false
+        )
+        revealSelection(at: selectedIndex, movement: movement)
+    }
+
+    private func revealSelection(at index: Int, movement: SelectionMovement) {
+        tableView.layoutSubtreeIfNeeded()
+        let rowFrame = tableView.rect(ofRow: index)
+        let visibleRect = tableView.visibleRect
+        let alignment = SelectionScrollPlanner.alignment(
+            selectedFrame: rowFrame,
+            visibleRect: visibleRect,
+            movement: movement
+        )
+        guard alignment == .centered else { return }
+        let targetY = rowFrame.midY - (visibleRect.height / 2)
+        let maximumY = max(0, tableView.bounds.height - visibleRect.height)
+        tableView.scroll(
+            NSPoint(x: 0, y: min(max(0, targetY), maximumY))
         )
     }
 
@@ -319,174 +317,62 @@ final class SwitcherPanelController: NSWindowController, NSCollectionViewDelegat
             ?? NSScreen.screens.first
         guard let screen else { return }
         let visibleFrame = screen.visibleFrame
-        let metrics = LayoutCalculator.metrics(
-            preset: currentPanelSize,
-            presentation: currentPresentation,
+        let layout = PanelLayoutCalculator.layout(
             displayVisibleFrame: visibleFrame,
             itemCount: items.count
         )
-        flowLayout.itemSize = NSSize(
-            width: metrics.itemSize.width,
-            height: metrics.itemSize.height
-        )
-        flowLayout.itemCount = items.count
-        flowLayout.columnCount = metrics.columns
-        flowLayout.centersIncompleteFinalRow =
-            metrics.centersIncompleteFinalRow
-        currentLayoutMetrics = metrics
-        flowLayout.invalidateLayout()
-        scrollView.hasVerticalScroller = metrics.isScrollable
+        scrollView.hasVerticalScroller = layout.isScrollable
 
-        let origin = NSPoint(
-            x: visibleFrame.midX - metrics.panelSize.width / 2,
-            y: visibleFrame.midY - metrics.panelSize.height / 2
+        let size = NSSize(
+            width: layout.panelSize.width,
+            height: layout.panelSize.height
         )
         panel.setFrame(
             NSRect(
-                origin: origin,
-                size: NSSize(
-                    width: metrics.panelSize.width,
-                    height: metrics.panelSize.height
-                )
+                origin: NSPoint(
+                    x: (visibleFrame.midX - size.width / 2).rounded(),
+                    y: (visibleFrame.midY - size.height / 2).rounded()
+                ),
+                size: size
             ),
             display: true
         )
     }
 
-    private func updateSelection(
-        scroll: Bool,
-        movement: SelectionMovement
-    ) {
-        collectionView.selectionIndexPaths = selectedIndex.map {
-            [IndexPath(item: $0, section: 0)]
-        } ?? []
-        for case let cell as SwitcherCollectionItem in collectionView.visibleItems() {
-            if let indexPath = collectionView.indexPath(for: cell) {
-                cell.isSelected = indexPath.item == selectedIndex
-            }
+    private func applyAppearance() {
+        guard let window else { return }
+        window.alphaValue = 1
+        switch currentTheme {
+        case .system:
+            window.appearance = nil
+        case .light:
+            window.appearance = NSAppearance(named: .aqua)
+        case .dark:
+            window.appearance = NSAppearance(named: .darkAqua)
         }
-        guard scroll, let selectedIndex else { return }
-        revealSelection(at: selectedIndex, movement: movement)
+        window.effectiveAppearance.performAsCurrentDrawingAppearance {
+            window.contentView?.layer?.backgroundColor =
+                NSColor.windowBackgroundColor.cgColor
+        }
+        window.animationBehavior =
+            NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            ? .none
+            : .utilityWindow
     }
 
-    private func revealSelection(
-        at index: Int,
-        movement: SelectionMovement
-    ) {
-        let indexPath = IndexPath(item: index, section: 0)
-        collectionView.layoutSubtreeIfNeeded()
-        guard let selectedFrame = flowLayout
-            .layoutAttributesForItem(at: indexPath)?
-            .frame
-        else {
-            collectionView.scrollToItems(
-                at: [indexPath],
-                scrollPosition: .centeredVertically
-            )
-            return
-        }
-
-        let alignment = SelectionScrollPlanner.alignment(
-            selectedFrame: selectedFrame,
-            visibleRect: collectionView.visibleRect,
-            movement: movement
-        )
-        guard alignment == .centered else { return }
-        collectionView.scrollToItems(
-            at: [indexPath],
-            scrollPosition: .centeredVertically
-        )
-    }
-
-    private func selectionMovement(
+    /// Direction of a selection change, including the wrap-around cases the
+    /// scroll planner needs in order to recentre instead of nudging.
+    static func movement(
         from previous: Int?,
         to next: Int,
         itemCount: Int
     ) -> SelectionMovement {
-        guard let previous,
-              previous != next,
-              itemCount > 1
-        else {
+        guard let previous, previous != next, itemCount > 1 else {
             return .stationary
         }
-        if previous == itemCount - 1, next == 0 {
-            return .forward
-        }
-        if previous == 0, next == itemCount - 1 {
-            return .backward
-        }
+        if previous == itemCount - 1, next == 0 { return .forward }
+        if previous == 0, next == itemCount - 1 { return .backward }
         return next > previous ? .forward : .backward
-    }
-
-    private func replaceItems(
-        _ newItems: [SwitcherDisplayItem],
-        forceReload: Bool = false
-    ) -> Set<WindowKey> {
-        let changedKeys = SwitcherDisplayReloadPlanner.keys(
-            previous: items,
-            next: newItems,
-            forceReload: forceReload
-        )
-        let next = newItems.reduce(
-            into: [WindowKey: SwitcherDisplayItem]()
-        ) { result, item in
-            result[item.window.id] = item
-        }
-        items = newItems
-        itemsByKey = next
-        return changedKeys
-    }
-
-    private func applyDataSnapshot(
-        reloading changedKeys: Set<WindowKey>,
-        completion: (() -> Void)? = nil
-    ) {
-        guard let dataSource else {
-            completion?()
-            return
-        }
-        let identifiers = items.map(\.window.id)
-        let previous = Set(dataSource.snapshot().itemIdentifiers)
-        var snapshot = NSDiffableDataSourceSnapshot<Int, WindowKey>()
-        snapshot.appendSections([0])
-        snapshot.appendItems(identifiers, toSection: 0)
-        let changedRetained = identifiers.filter {
-            previous.contains($0) && changedKeys.contains($0)
-        }
-        if !changedRetained.isEmpty {
-            snapshot.reloadItems(changedRetained)
-        }
-        dataSource.apply(
-            snapshot,
-            animatingDifferences: false,
-            completion: completion
-        )
-    }
-
-    private func applyAppearance() {
-        window?.alphaValue = 1
-        switch currentTheme {
-        case .system:
-            window?.appearance = nil
-        case .light:
-            window?.appearance = NSAppearance(named: .aqua)
-        case .dark:
-            window?.appearance = NSAppearance(named: .darkAqua)
-        }
-
-        // Alpha 2 uses a true semantic opaque surface. Avoiding a
-        // visual-effect view keeps underlying content from competing with
-        // titles and removes blur compositing from the lowest-resource mode.
-        if let window {
-            window.effectiveAppearance.performAsCurrentDrawingAppearance {
-                window.contentView?.layer?.backgroundColor =
-                    NSColor.windowBackgroundColor.cgColor
-            }
-        }
-        window?.animationBehavior =
-            NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-            ? .none
-            : .utilityWindow
     }
 
     private static func screen(
@@ -500,5 +386,22 @@ final class SwitcherPanelController: NSWindowController, NSCollectionViewDelegat
             }
             return CGDirectDisplayID(number.uint32Value) == displayID
         }
+    }
+}
+
+enum SwitcherDisplayReloadPlanner {
+    /// Rows whose rendered content changed between two equally sized lists.
+    static func changedRows(
+        previous: [SwitcherDisplayItem],
+        next: [SwitcherDisplayItem]
+    ) -> IndexSet {
+        guard previous.count == next.count else {
+            return IndexSet(next.indices)
+        }
+        return IndexSet(
+            next.indices.filter {
+                !next[$0].hasSameRenderedContent(as: previous[$0])
+            }
+        )
     }
 }
