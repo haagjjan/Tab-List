@@ -16,8 +16,7 @@ private actor SuspendedFocusInventory: WindowInventoryProviding {
     init(windows: [WindowRecord], staleFocusedKey: WindowKey) {
         result = WindowInventoryResult(
             windows: windows,
-            visibleSpaceIDs: [1],
-            visibleWindowKeys: Set(windows.map(\.id))
+            visibleSpaceIDs: [1]
         )
         self.staleFocusedKey = staleFocusedKey
     }
@@ -68,8 +67,7 @@ private actor SequencedInventory: WindowInventoryProviding {
         let windows = discoveries == 1 ? [first] : [first, second]
         return WindowInventoryResult(
             windows: windows,
-            visibleSpaceIDs: [1],
-            visibleWindowKeys: Set(windows.map(\.id))
+            visibleSpaceIDs: [1]
         )
     }
 

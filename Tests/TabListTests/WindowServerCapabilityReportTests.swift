@@ -9,12 +9,10 @@ struct WindowServerCapabilityReportTests {
             detected: [
                 .spaceInventory,
                 .windowSpaceQuery,
-                .exactActivation,
                 .accessibilityWindowID,
             ],
             operational: [
                 .windowSpaceQuery,
-                .exactActivation,
                 .accessibilityWindowID,
             ],
             frameworkPath: nil
@@ -24,16 +22,35 @@ struct WindowServerCapabilityReportTests {
     }
 
     @Test
-    func testAllRequiredWindowCapabilitiesAvoidFallbackWarning() {
-        let required: WindowServerCapabilities = [
+    func testSpaceQueriesAvoidFallbackWarning() {
+        let operational: WindowServerCapabilities = [
+            .mainConnection,
             .spaceInventory,
             .windowSpaceQuery,
-            .exactActivation,
-            .accessibilityWindowID,
         ]
         let report = WindowServerCapabilityReport(
-            detected: required,
-            operational: required,
+            detected: operational,
+            operational: operational,
+            frameworkPath: nil
+        )
+
+        XCTAssertFalse(report.usesPublicFallbacks)
+    }
+
+    @Test
+    func testMissingWindowIdentifierMappingIsNotAFallbackWarning() {
+        let report = WindowServerCapabilityReport(
+            detected: [
+                .mainConnection,
+                .spaceInventory,
+                .windowSpaceQuery,
+                .accessibilityWindowID,
+            ],
+            operational: [
+                .mainConnection,
+                .spaceInventory,
+                .windowSpaceQuery,
+            ],
             frameworkPath: nil
         )
 
