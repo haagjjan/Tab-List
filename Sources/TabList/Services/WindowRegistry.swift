@@ -154,10 +154,7 @@ public actor WindowRegistry:
             return window
         }
 
-        mru.seed(
-            frontToBack: incarnatedWindows.map(\.id),
-            knownVisibleKeys: discovered.visibleWindowKeys
-        )
+        mru.seed(frontToBack: incarnatedWindows.map(\.id))
         mru.retainOnly(newKeys)
 
         let sequenced = mru.applyingSequences(to: incarnatedWindows)
@@ -197,28 +194,8 @@ public actor WindowRegistry:
         generation &+= 1
     }
 
-    public func remove(_ key: WindowKey) {
-        guard records.removeValue(forKey: key) != nil else { return }
-        invalidationGeneration &+= 1
-        lastRefresh = nil
-        incarnations.removeValue(forKey: key)
-        sourceOrder.removeAll { $0 == key }
-        mru.remove(key)
-        if lastConfirmedFocusedKey == key {
-            lastConfirmedFocusedKey = nil
-        }
-        if latestObservedFocusedKey == key {
-            latestObservedFocusedKey = nil
-        }
-        generation &+= 1
-    }
-
     public func record(for key: WindowKey) -> WindowRecord? {
         records[key]
-    }
-
-    public func contains(_ key: WindowKey) -> Bool {
-        records[key] != nil
     }
 
     public func lastFocusedWindowKey() -> WindowKey? {
@@ -251,6 +228,7 @@ public final class WindowRegistryLifecycleObserver {
     private var workspaceTokens: [any NSObjectProtocol] = []
     private var applicationTokens: [any NSObjectProtocol] = []
     private var refreshTask: Task<Void, Never>?
+    private var focusTask: Task<Void, Never>?
 
     public init(
         registry: WindowRegistry,
@@ -338,6 +316,8 @@ public final class WindowRegistryLifecycleObserver {
         applicationTokens.removeAll()
         refreshTask?.cancel()
         refreshTask = nil
+        focusTask?.cancel()
+        focusTask = nil
     }
 
     public func refreshNow() {
@@ -348,9 +328,34 @@ public final class WindowRegistryLifecycleObserver {
         }
     }
 
+    /// Records the focused window of a process that just took focus. Only the
+    /// frontmost process may advance MRU order.
+    public func noteFocusChanged(pid: pid_t) {
+        guard GlobalFocusObservationGate.accepts(
+            observedPID: pid,
+            frontmostPID: NSWorkspace.shared.frontmostApplication?
+                .processIdentifier
+        ) else {
+            return
+        }
+        focusTask?.cancel()
+        focusTask = Task { [registry, accessibility] in
+            guard let focused = await accessibility.focusedWindowKey(for: pid),
+                  !Task.isCancelled,
+                  GlobalFocusObservationGate.accepts(
+                      observedPID: pid,
+                      frontmostPID: NSWorkspace.shared.frontmostApplication?
+                          .processIdentifier
+                  ) else {
+                return
+            }
+            await registry.noteFocused(focused)
+        }
+    }
+
     private func handleWorkspaceNotification(terminatedPID: pid_t?) {
         if let terminatedPID {
-            accessibility.invalidate(pid: terminatedPID)
+            accessibility.forget(pid: terminatedPID)
         }
         scheduleRefresh()
     }
@@ -360,21 +365,8 @@ public final class WindowRegistryLifecycleObserver {
             scheduleRefresh()
             return
         }
-
-        refreshTask?.cancel()
-        refreshTask = Task { [registry, accessibility] in
-            await registry.invalidate()
-            if let focused = await accessibility.focusedWindowKey(
-                for: pid
-            ), GlobalFocusObservationGate.accepts(
-                observedPID: pid,
-                frontmostPID: NSWorkspace.shared
-                    .frontmostApplication?.processIdentifier
-            ) {
-                await registry.noteFocused(focused)
-            }
-            _ = await registry.refresh()
-        }
+        noteFocusChanged(pid: pid)
+        scheduleRefresh()
     }
 
     public func scheduleRefresh() {

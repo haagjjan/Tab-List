@@ -14,7 +14,7 @@ enum WindowClosePolicy {
         "com.apple.systemuiserver",
         "com.apple.controlcenter",
         "com.apple.loginwindow",
-        "com.apple.WindowManager",
+        "com.apple.windowmanager",
     ]
 
     static func disposition(
@@ -22,10 +22,14 @@ enum WindowClosePolicy {
         canonicalWindowCount: Int,
         tabListBundleIdentifier: String?
     ) -> WindowCloseDisposition {
+        let bundleIdentifier = record.bundleIdentifier?.lowercased()
+        let tabListBundleIdentifier = tabListBundleIdentifier?.lowercased()
+        let isTabListBundle = bundleIdentifier != nil
+            && bundleIdentifier == tabListBundleIdentifier
         guard canonicalWindowCount == 1,
               record.id.pid != ProcessInfo.processInfo.processIdentifier,
-              record.bundleIdentifier != tabListBundleIdentifier,
-              record.bundleIdentifier.map({
+              !isTabListBundle,
+              bundleIdentifier.map({
                   !protectedBundleIdentifiers.contains($0)
               }) ?? true
         else {
@@ -35,22 +39,25 @@ enum WindowClosePolicy {
     }
 }
 
-/// Activates and closes an exact process-scoped window. Private activation is
-/// attempted only when the bridge has a validated implementation; AX raising and
-/// public application activation provide a safe fallback.
+/// Activates and closes one exact window through Accessibility.
+///
+/// Raising a window and activating its process is enough to reach a window on
+/// another Space or in a hidden application, so no private activation entry
+/// point is involved. Success is only reported after a bounded poll confirms
+/// that the requested window really holds focus.
 public final class WindowActionService: WindowActuating, @unchecked Sendable {
     private let registry: WindowRegistry
     private let accessibility: AccessibilityBridge
-    private let windowServer: WindowServerBridge
+    private let focusTimeout: Duration
 
     public init(
         registry: WindowRegistry,
         accessibility: AccessibilityBridge,
-        windowServer: WindowServerBridge
+        focusTimeout: Duration = .milliseconds(1_200)
     ) {
         self.registry = registry
         self.accessibility = accessibility
-        self.windowServer = windowServer
+        self.focusTimeout = focusTimeout
     }
 
     public func activate(
@@ -61,76 +68,35 @@ public final class WindowActionService: WindowActuating, @unchecked Sendable {
             return .targetMissing
         }
 
-        // Capture Space state before any operation can move the target. The
-        // private activation call may front another Space immediately, and
-        // computing this afterward would incorrectly apply the short
-        // same-Space verification timeout while macOS is still animating.
-        let initiallyVisibleSpaceIDs = windowServer.visibleSpaceIDs()
-        let isCrossSpace = !record.spaceIDs.isEmpty
-            && Set(record.spaceIDs).isDisjoint(with: initiallyVisibleSpaceIDs)
-
         if record.isMinimized {
             var preparation = await accessibility.unminimize(key)
             if case .targetMissing = preparation {
                 accessibility.invalidate(pid: key.pid)
                 preparation = await accessibility.unminimize(key)
             }
-            guard preparation.isSuccess else {
-                return map(preparation)
-            }
+            guard preparation.isSuccess else { return map(preparation) }
         }
 
+        _ = await accessibility.activate(key)
         await activateApplication(pid: key.pid)
-        var operation = await accessibility.activate(key)
-
-        if case .targetMissing = operation {
-            await registry.invalidate()
-            _ = await registry.refresh()
-            operation = await accessibility.activate(key)
-        }
-
-        let usedPrivateActivation = windowServer.activateExactWindow(
-            pid: key.pid,
-            windowID: key.windowID
-        )
-        if usedPrivateActivation {
-            // A Space transition can invalidate focus state established before
-            // the private call. Reassert the target after WindowServer fronts it.
-            operation = await accessibility.activate(key)
-        }
-
-        let firstTimeout: Duration = isCrossSpace
-            ? .seconds(2)
-            : .milliseconds(650)
-        if await waitForFocus(key, timeout: firstTimeout) {
+        if await waitForFocus(key, timeout: focusTimeout) {
             await registry.noteFocused(key)
             return .success
         }
-        if usedPrivateActivation {
-            windowServer.disableExactActivationForProcessLifetime()
-        }
 
-        // Retry once with a freshly resolved AX element. Cross-Space
-        // transitions are asynchronous, so success is only returned after a
-        // bounded focus poll confirms the exact WindowKey.
+        // A stale Accessibility element is the usual reason the first attempt
+        // does not take effect. Resolve the window again and retry once.
+        accessibility.invalidate(pid: key.pid)
         guard await resolveRecord(for: target) != nil else {
             return .targetMissing
         }
-        accessibility.invalidate(pid: key.pid)
-        _ = windowServer.activateExactWindow(
-            pid: key.pid,
-            windowID: key.windowID
-        )
+        let retry = await accessibility.activate(key)
+        guard retry.isSuccess else { return map(retry) }
         await activateApplication(pid: key.pid)
-        operation = await accessibility.activate(key)
-        guard operation.isSuccess else { return map(operation) }
 
-        let retryTimeout: Duration = isCrossSpace
-            ? .seconds(2)
-            : .milliseconds(750)
-        guard await waitForFocus(key, timeout: retryTimeout) else {
+        guard await waitForFocus(key, timeout: focusTimeout) else {
             TabListLog.windowActions.warning(
-                "Exact focus verification timed out for pid \(key.pid, privacy: .private(mask: .hash)) window \(key.windowID, privacy: .private(mask: .hash))"
+                "Focus verification timed out for pid \(key.pid, privacy: .private(mask: .hash))"
             )
             return .timedOut
         }
@@ -138,33 +104,16 @@ public final class WindowActionService: WindowActuating, @unchecked Sendable {
         return .success
     }
 
-    private func activateApplication(pid: pid_t) async {
-        await MainActor.run {
-            guard let application = NSRunningApplication(
-                processIdentifier: pid
-            ) else {
-                return
-            }
-            if #available(macOS 14.0, *) {
-                application.activate()
-            } else {
-                application.activate(options: [.activateIgnoringOtherApps])
-            }
-        }
-    }
-
     public func close(
         _ target: WindowActionTarget
     ) async -> WindowActionResult {
         let key = target.key
-        guard let record = await resolveRecord(for: target) else {
+        let snapshot = await registry.refreshSnapshot()
+        guard let record = snapshot.window(for: key),
+              target.matches(record) else {
             return .targetMissing
         }
-
-        let snapshot = await registry.snapshot(forceRefreshIfStale: true)
-        let applicationWindows = snapshot.windows.filter {
-            $0.id.pid == key.pid && $0.isStandardWindow && $0.isActionable
-        }
+        let applicationWindows = snapshot.windows.filter { $0.id.pid == key.pid }
         if WindowClosePolicy.disposition(
             for: record,
             canonicalWindowCount: applicationWindows.count,
@@ -178,9 +127,7 @@ public final class WindowActionService: WindowActuating, @unchecked Sendable {
             accessibility.invalidate(pid: key.pid)
             operation = await accessibility.close(key)
         }
-        guard operation.isSuccess else {
-            return map(operation)
-        }
+        guard operation.isSuccess else { return map(operation) }
 
         let clock = ContinuousClock()
         for delay in [
@@ -201,17 +148,14 @@ public final class WindowActionService: WindowActuating, @unchecked Sendable {
                 return .windowClosed
             }
             if !target.matches(current) {
-                // The original canonical window disappeared and its numeric
-                // WindowServer ID has already been recycled.
                 return .windowClosed
             }
         }
 
-        // The most common reason a successful close-button press leaves the
-        // window alive after the bounded verification period is a document
-        // confirmation sheet.
+        // A close-button press that leaves the window alive after the bounded
+        // verification period almost always means a save confirmation sheet.
         TabListLog.windowActions.notice(
-            "Window close requires application confirmation for pid \(key.pid, privacy: .private(mask: .hash)) window \(key.windowID, privacy: .private(mask: .hash))"
+            "Window close requires application confirmation for pid \(key.pid, privacy: .private(mask: .hash))"
         )
         _ = await activate(target)
         return .confirmationRequired
@@ -233,8 +177,7 @@ public final class WindowActionService: WindowActuating, @unchecked Sendable {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(2))
         repeat {
-            let terminated = await MainActor.run { application.isTerminated }
-            if terminated {
+            if await MainActor.run(body: { application.isTerminated }) {
                 await registry.invalidate()
                 _ = await registry.refresh()
                 return .applicationQuit
@@ -248,24 +191,26 @@ public final class WindowActionService: WindowActuating, @unchecked Sendable {
             }
         } while clock.now < deadline
 
-        // A still-running app commonly has an unsaved-document or quit
-        // confirmation sheet. Bring it forward without forcing termination.
         await activateApplication(pid: record.id.pid)
         return .confirmationRequired
+    }
+
+    private func activateApplication(pid: pid_t) async {
+        _ = await MainActor.run {
+            NSRunningApplication(processIdentifier: pid)?.activate() ?? false
+        }
     }
 
     private func resolveRecord(
         for target: WindowActionTarget
     ) async -> WindowRecord? {
         if let current = await registry.record(for: target.key),
-           target.matches(current),
-           current.isActionable {
+           target.matches(current) {
             return current
         }
         _ = await registry.refresh()
         guard let refreshed = await registry.record(for: target.key),
-              target.matches(refreshed),
-              refreshed.isActionable else {
+              target.matches(refreshed) else {
             return nil
         }
         return refreshed
@@ -276,17 +221,17 @@ public final class WindowActionService: WindowActuating, @unchecked Sendable {
     ) -> WindowActionResult {
         switch operation {
         case .success:
-            return .success
+            .success
         case .targetMissing:
-            return .targetMissing
+            .targetMissing
         case .permissionDenied:
-            return .permissionDenied
+            .permissionDenied
         case .unsupported:
-            return .unsupported
+            .unsupported
         case .timedOut:
-            return .timedOut
+            .timedOut
         case let .failed(reason):
-            return .failed(reason: reason)
+            .failed(reason: reason)
         }
     }
 
@@ -297,12 +242,9 @@ public final class WindowActionService: WindowActuating, @unchecked Sendable {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: timeout)
         repeat {
-            let focusedKey = await accessibility.focusedWindowKey(
-                for: key.pid
-            )
+            let focusedKey = await accessibility.focusedWindowKey(for: key.pid)
             let frontmostPID = await MainActor.run {
-                NSWorkspace.shared.frontmostApplication?
-                    .processIdentifier
+                NSWorkspace.shared.frontmostApplication?.processIdentifier
             }
             if GlobalFocusObservationGate.confirms(
                 target: key,
@@ -317,13 +259,6 @@ public final class WindowActionService: WindowActuating, @unchecked Sendable {
                 return false
             }
         } while clock.now < deadline
-        return false
-    }
-}
-
-private extension AccessibilityOperationResult {
-    var isSuccess: Bool {
-        if case .success = self { return true }
         return false
     }
 }
