@@ -1,22 +1,5 @@
 import Foundation
 
-public enum PresentationMode: String, CaseIterable, Codable, Identifiable, Sendable {
-    case thumbnails
-    case appIcons
-    case titles
-
-    public var id: Self { self }
-}
-
-public enum PanelSize: String, CaseIterable, Codable, Identifiable, Sendable {
-    case small
-    case medium
-    case large
-    case auto
-
-    public var id: Self { self }
-}
-
 public enum ThemePreference: String, CaseIterable, Codable, Identifiable, Sendable {
     case system
     case light
@@ -72,18 +55,13 @@ public enum ReverseControlDefinition: Codable, Equatable, Sendable {
     case key(UInt16)
 }
 
-/// Version 2 of the user-controlled settings payload.
+/// User-controlled preferences.
 ///
-/// Launch-at-login is intentionally absent because `SMAppService` is the source
-/// of truth for that state.
-public struct SettingsV2: Codable, Equatable, Sendable {
-    public var presentation: PresentationMode
-    public var panelSize: PanelSize
+/// Launch-at-login is absent because `SMAppService` owns that state. Unknown
+/// keys from an older payload are ignored, and every field decodes with a
+/// default, so preferences written by earlier schema versions still load.
+public struct TabListSettings: Codable, Equatable, Sendable {
     public var theme: ThemePreference
-    /// Retained in the version-1 payload so early alpha preferences continue
-    /// to decode. Alpha 2 intentionally normalizes this legacy control to a
-    /// fully opaque background.
-    public var opacity: Double
     public var shortcut: ShortcutDefinition
     public var spaceScope: SpaceScope
     public var screenScope: ScreenScope
@@ -91,17 +69,13 @@ public struct SettingsV2: Codable, Equatable, Sendable {
     public var includeHiddenApps: Bool
     public var includeFullscreen: Bool
     public var excludedBundleIdentifiers: Set<String>
-    public var refreshThumbnailsInBackground: Bool
     public var showMenuBarIcon: Bool
     public var automaticallyChecksForUpdates: Bool
     public var reverseControl: ReverseControlDefinition
     public var holdCycleSpeed: Double
 
     public init(
-        presentation: PresentationMode = .thumbnails,
-        panelSize: PanelSize = .auto,
         theme: ThemePreference = .system,
-        opacity: Double = 1.0,
         shortcut: ShortcutDefinition = .commandTab,
         spaceScope: SpaceScope = .allSpaces,
         screenScope: ScreenScope = .allScreens,
@@ -109,16 +83,12 @@ public struct SettingsV2: Codable, Equatable, Sendable {
         includeHiddenApps: Bool = true,
         includeFullscreen: Bool = true,
         excludedBundleIdentifiers: Set<String> = [],
-        refreshThumbnailsInBackground: Bool = false,
         showMenuBarIcon: Bool = true,
         automaticallyChecksForUpdates: Bool = true,
         reverseControl: ReverseControlDefinition = .shiftWithForwardKey,
         holdCycleSpeed: Double = 1.0
     ) {
-        self.presentation = presentation
-        self.panelSize = panelSize
         self.theme = theme
-        self.opacity = opacity
         self.shortcut = shortcut
         self.spaceScope = spaceScope
         self.screenScope = screenScope
@@ -126,32 +96,23 @@ public struct SettingsV2: Codable, Equatable, Sendable {
         self.includeHiddenApps = includeHiddenApps
         self.includeFullscreen = includeFullscreen
         self.excludedBundleIdentifiers = excludedBundleIdentifiers
-        self.refreshThumbnailsInBackground = refreshThumbnailsInBackground
         self.showMenuBarIcon = showMenuBarIcon
         self.automaticallyChecksForUpdates = automaticallyChecksForUpdates
         self.reverseControl = reverseControl
         self.holdCycleSpeed = holdCycleSpeed
     }
 
-    public static let `default` = SettingsV2()
+    public static let `default` = TabListSettings()
 
-    /// Returns a safe representation for the current product decisions,
-    /// including migrations for controls retired during the alpha.
-    public func normalized() -> SettingsV2 {
+    public func normalized() -> Self {
         var copy = self
-        // The continuous translucency control was removed after the first
-        // hands-on alpha. Keep the field for backwards-compatible decoding,
-        // while migrating every saved value to the new opaque default.
-        copy.opacity = 1.0
         copy.excludedBundleIdentifiers = Set(
             excludedBundleIdentifiers.compactMap { identifier in
-                let trimmed = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+                let trimmed = identifier
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
                 return trimmed.isEmpty ? nil : trimmed
             }
         )
-
-        // Shift is session input for reverse cycling, never part of the stored
-        // base shortcut.
         copy.shortcut.modifiers.remove(.shift)
         if !ShortcutValidator.validate(copy.shortcut).isValid {
             copy.shortcut = .commandTab
@@ -164,10 +125,7 @@ public struct SettingsV2: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case presentation
-        case panelSize
         case theme
-        case opacity
         case shortcut
         case spaceScope
         case screenScope
@@ -175,7 +133,6 @@ public struct SettingsV2: Codable, Equatable, Sendable {
         case includeHiddenApps
         case includeFullscreen
         case excludedBundleIdentifiers
-        case refreshThumbnailsInBackground
         case showMenuBarIcon
         case automaticallyChecksForUpdates
         case reverseControl
@@ -184,61 +141,56 @@ public struct SettingsV2: Codable, Equatable, Sendable {
 
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        let fallback = Self.default
         self.init(
-            presentation: try values.decode(
-                PresentationMode.self,
-                forKey: .presentation
-            ),
-            panelSize: try values.decode(PanelSize.self, forKey: .panelSize),
-            theme: try values.decode(ThemePreference.self, forKey: .theme),
-            opacity: try values.decode(Double.self, forKey: .opacity),
-            shortcut: try values.decode(
+            theme: try values.decodeIfPresent(
+                ThemePreference.self,
+                forKey: .theme
+            ) ?? fallback.theme,
+            shortcut: try values.decodeIfPresent(
                 ShortcutDefinition.self,
                 forKey: .shortcut
-            ),
-            spaceScope: try values.decode(SpaceScope.self, forKey: .spaceScope),
-            screenScope: try values.decode(ScreenScope.self, forKey: .screenScope),
-            includeMinimized: try values.decode(
+            ) ?? fallback.shortcut,
+            spaceScope: try values.decodeIfPresent(
+                SpaceScope.self,
+                forKey: .spaceScope
+            ) ?? fallback.spaceScope,
+            screenScope: try values.decodeIfPresent(
+                ScreenScope.self,
+                forKey: .screenScope
+            ) ?? fallback.screenScope,
+            includeMinimized: try values.decodeIfPresent(
                 Bool.self,
                 forKey: .includeMinimized
-            ),
-            includeHiddenApps: try values.decode(
+            ) ?? fallback.includeMinimized,
+            includeHiddenApps: try values.decodeIfPresent(
                 Bool.self,
                 forKey: .includeHiddenApps
-            ),
-            includeFullscreen: try values.decode(
+            ) ?? fallback.includeHiddenApps,
+            includeFullscreen: try values.decodeIfPresent(
                 Bool.self,
                 forKey: .includeFullscreen
-            ),
-            excludedBundleIdentifiers: try values.decode(
+            ) ?? fallback.includeFullscreen,
+            excludedBundleIdentifiers: try values.decodeIfPresent(
                 Set<String>.self,
                 forKey: .excludedBundleIdentifiers
-            ),
-            refreshThumbnailsInBackground: try values.decode(
-                Bool.self,
-                forKey: .refreshThumbnailsInBackground
-            ),
-            showMenuBarIcon: try values.decode(
+            ) ?? fallback.excludedBundleIdentifiers,
+            showMenuBarIcon: try values.decodeIfPresent(
                 Bool.self,
                 forKey: .showMenuBarIcon
-            ),
-            automaticallyChecksForUpdates: try values.decode(
+            ) ?? fallback.showMenuBarIcon,
+            automaticallyChecksForUpdates: try values.decodeIfPresent(
                 Bool.self,
                 forKey: .automaticallyChecksForUpdates
-            ),
+            ) ?? fallback.automaticallyChecksForUpdates,
             reverseControl: try values.decodeIfPresent(
                 ReverseControlDefinition.self,
                 forKey: .reverseControl
-            ) ?? .shiftWithForwardKey,
+            ) ?? fallback.reverseControl,
             holdCycleSpeed: try values.decodeIfPresent(
                 Double.self,
                 forKey: .holdCycleSpeed
-            ) ?? 1.0
+            ) ?? fallback.holdCycleSpeed
         )
     }
 }
-
-/// Source compatibility for alpha code while the persisted payload migrates to
-/// schema V2. New code should prefer `TabListSettings` or `SettingsV2`.
-public typealias SettingsV1 = SettingsV2
-public typealias TabListSettings = SettingsV2

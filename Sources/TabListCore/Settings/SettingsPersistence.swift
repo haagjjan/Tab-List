@@ -6,14 +6,14 @@ public enum SettingsPersistenceError: Error, Equatable, Sendable {
 }
 
 public struct PersistedSettingsEnvelope: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 2
+    public static let currentSchemaVersion = 3
 
     public let schemaVersion: Int
-    public let settings: SettingsV1
+    public let settings: TabListSettings
 
     public init(
         schemaVersion: Int = Self.currentSchemaVersion,
-        settings: SettingsV1
+        settings: TabListSettings
     ) {
         self.schemaVersion = schemaVersion
         self.settings = settings
@@ -26,19 +26,23 @@ public enum SettingsDecodeSource: Equatable, Sendable {
 }
 
 public struct DecodedSettings: Equatable, Sendable {
-    public let settings: SettingsV1
+    public let settings: TabListSettings
     public let source: SettingsDecodeSource
 
-    public init(settings: SettingsV1, source: SettingsDecodeSource) {
+    public init(settings: TabListSettings, source: SettingsDecodeSource) {
         self.settings = settings
         self.source = source
     }
 }
 
-/// Codable helpers shared by a `UserDefaults`-backed app store and tests.
+/// Codable helpers shared by the `UserDefaults`-backed store and tests.
+///
+/// Schema versions 1 and 2 carried retired presentation preferences. Those
+/// keys are simply absent from the current payload, so an older envelope
+/// decodes into current defaults and is rewritten at the new version.
 public enum SettingsPersistence {
     public static func encode(
-        _ settings: SettingsV1,
+        _ settings: TabListSettings,
         encoder: JSONEncoder = JSONEncoder()
     ) throws -> Data {
         try encoder.encode(
@@ -50,10 +54,15 @@ public enum SettingsPersistence {
         _ data: Data,
         decoder: JSONDecoder = JSONDecoder()
     ) throws -> DecodedSettings {
-        if let envelope = try? decoder.decode(PersistedSettingsEnvelope.self, from: data) {
+        if let envelope = try? decoder.decode(
+            PersistedSettingsEnvelope.self,
+            from: data
+        ) {
             guard (1 ... PersistedSettingsEnvelope.currentSchemaVersion)
                 .contains(envelope.schemaVersion) else {
-                throw SettingsPersistenceError.unsupportedSchemaVersion(envelope.schemaVersion)
+                throw SettingsPersistenceError.unsupportedSchemaVersion(
+                    envelope.schemaVersion
+                )
             }
             return DecodedSettings(
                 settings: envelope.settings.normalized(),
@@ -61,9 +70,7 @@ public enum SettingsPersistence {
             )
         }
 
-        // Early development builds stored SettingsV1 directly. Supporting this
-        // shape makes the first public schema migration deterministic.
-        if let legacy = try? decoder.decode(SettingsV1.self, from: data) {
+        if let legacy = try? decoder.decode(TabListSettings.self, from: data) {
             return DecodedSettings(
                 settings: legacy.normalized(),
                 source: .legacyUnversioned
