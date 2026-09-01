@@ -10,11 +10,8 @@ public struct RedactedWindowDiagnostic: Codable, Sendable {
     public let isMinimized: Bool
     public let isHidden: Bool
     public let isFullscreen: Bool
-    public let isStandardWindow: Bool
     public let isClosable: Bool
     public let identitySource: WindowIdentitySource
-    public let identityConfidence: WindowIdentityConfidence
-    public let isActionable: Bool
     public let spaceCount: Int
     public let displayID: CGDirectDisplayID?
 }
@@ -96,11 +93,8 @@ public enum DiagnosticsService {
             isMinimized: window.isMinimized,
             isHidden: window.isHidden,
             isFullscreen: window.isFullscreen,
-            isStandardWindow: window.isStandardWindow,
             isClosable: window.isClosable,
             identitySource: window.identitySource,
-            identityConfidence: window.identitySource.confidence,
-            isActionable: window.isActionable,
             spaceCount: window.spaceIDs.count,
             displayID: window.displayID
         )

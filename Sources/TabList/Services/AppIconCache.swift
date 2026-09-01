@@ -126,16 +126,6 @@ public final class AppIconCache: AppIconProviding {
         placeholderIcons.removeAll(keepingCapacity: false)
     }
 
-    public func removePersistentCache() async throws {
-        purgeMemory()
-        let directory = cacheDirectory
-        try await Task.detached(priority: .utility) {
-            let fileManager = FileManager()
-            guard fileManager.fileExists(atPath: directory.path) else { return }
-            try fileManager.removeItem(at: directory)
-        }.value
-    }
-
     private func fingerprint(
         bundleIdentifier: String?,
         bundleURL: URL?,
