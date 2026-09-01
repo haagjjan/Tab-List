@@ -3,56 +3,58 @@
 ## Purpose
 
 Validate Tab-List's real window behavior on exact Apple Silicon macOS 15 and
-macOS 26 builds and produce the evidence required before enabling any
-unsupported WindowServer capability for those builds.
+macOS 26 builds, and confirm that the two unsupported read-only WindowServer
+capabilities behave correctly — and degrade correctly — on those builds.
 
-The source currently keeps separate empty allowlists for:
+## What the source actually does
 
-- Space inventory and per-window Space queries.
-- Exact window activation.
-- Accessibility element to WindowServer ID mapping.
+`WindowServerBridge` resolves four symbols and enables each only after a
+harmless runtime probe succeeds on the running system:
 
-That is intentional. Symbol presence or a macOS major version is not evidence
-that a private calling convention is safe.
+| Capability | Symbol | Probe | Consequence if the probe fails |
+|---|---|---|---|
+| Main connection | `SLSMainConnectionID` | Non-zero connection | Space queries are unavailable |
+| Space inventory | `SLSCopyManagedDisplaySpaces` | At least one current Space is reported | Space queries are unavailable |
+| Window Space query | `SLSCopySpacesForWindows` | Space IDs are returned for a real window | Space queries are unavailable |
+| Window identifier | `_AXUIElementGetWindow` | An identifier reported for a real Accessibility window also appears in the public window list for that process | Windows get process-scoped ordinals instead |
+
+There is **no private activation path**. Window discovery uses only the public
+Accessibility API, and window activation uses `AXRaise` plus
+`NSRunningApplication.activate()`. If every private capability is off, the only
+user-visible loss is the "Visible now" scope, which stops narrowing by desktop.
+
+The window-identifier probe stays pending until Accessibility is trusted, so it
+runs on the first discovery after the permission is granted rather than at
+launch.
 
 ## Why this needs a human
 
 This matrix needs interactive Macs, user-created Spaces, full-screen windows,
 Stage Manager, display reconfiguration, sleep and lock, permission prompts, and
-deliberate Debug-only invocation of unsupported system APIs. macOS 15 hardware
-is not available in the current workspace. Accessibility and Screen Recording
-permission must be granted or revoked by a person.
+the real third-party applications whose Accessibility window lists diverge from
+a plain AppKit app. macOS 15 hardware is not available in the development
+workspace, and Accessibility permission must be granted or revoked by a person.
 
 ## Prerequisites
 
 - [Full Xcode and passing automated tests](01_INSTALL_FULL_XCODE.md).
 - A reviewed Debug build from a known commit.
-- Apple Silicon test hosts on:
-  - The currently supported macOS 15 point release.
-  - The currently supported macOS 26 point release.
+- Apple Silicon test hosts on the currently supported macOS 15 and macOS 26
+  point releases.
 - A throwaway local user account on each host.
 - The `WindowFixture` app and only synthetic documents.
 - At least two displays for the multi-display portion.
 - Firefox, Chrome, Safari, Finder, TextEdit, and one Electron app.
 - A way to return the test host to a known state.
 
-Do not start private-ABI validation until Codex confirms that each capability
-has a separate gated adapter, structural self-test, failure path, and public
-fallback. The macOS 15 private thumbnail backend must also exist behind its own
-gate before it can be validated.
-
 ## Safety rules
 
 - Use a throwaway macOS account with no private documents open.
 - Save unrelated work and close sensitive apps.
 - Run only a Debug build.
-- Never add unverified environment flags to Release, CI publication, login
-  items, or a normal user build.
-- Test one private capability at a time before testing combinations.
 - Stop immediately after a crash, unexpected logout, focus corruption, Window
   Server instability, or unexplained app termination.
 - Do not guess or copy AltTab private constants or wrappers.
-- Do not add a build to an allowlist merely because calls did not crash.
 
 ## Record the exact test identity
 
@@ -67,26 +69,26 @@ xcodebuild -version
 xcrun swift --version
 ```
 
-Record display count, display scale, Stage Manager state, “Displays have
-separate Spaces” state, app versions, and Mac model class/chip/RAM.
+Record display count, display scale, Stage Manager state, "Displays have
+separate Spaces" state, app versions, and Mac model class/chip/RAM.
 
 Do not record serial numbers, provisioning UDIDs, hardware UUIDs, Apple Account
 details, user names, or real window titles.
 
 ## Human action
 
-### A. Establish the public-fallback baseline
+### A. Establish the baseline
 
-1. Build and launch Tab-List without private opt-in environment variables.
-2. Grant Accessibility only when prompted.
-3. Skip Screen Recording and verify App Icon and Title modes.
-4. Confirm current-Space switching, reverse cycling, release-to-activate,
+1. Build and launch Tab-List.
+2. Grant Accessibility when prompted.
+3. Confirm that after granting, the switcher populates without a relaunch.
+4. Confirm switching, reverse cycling, hold-to-repeat, release-to-activate,
    Escape, Delete, mouse activation, temporary disable, and Quit.
 5. Confirm native `Command-Tab` returns immediately after disable and Quit.
-6. Switch to Thumbnail mode, test denied state, then grant Screen Recording and
-   relaunch if macOS requires it.
-7. Export redacted diagnostics.
-8. Confirm degraded-mode warnings are accurate and the app does not crash.
+6. Export redacted diagnostics and check `windowServerCapabilities` for the
+   detected and operational masks.
+7. Confirm any compatibility warning shown in Settings and the menu bar matches
+   the operational mask.
 
 ### B. Build the synthetic window matrix
 
@@ -103,85 +105,51 @@ Use `WindowFixture` and real test applications to create:
 Exercise creation, close, move, resize, minimize, restore, retitle, app launch,
 app termination, and display disconnection while the switcher is visible.
 
-### C. Validate private capabilities separately
+### C. Application-specific discovery checks
 
-The generated `TabList-Cross-Space-Debug` scheme enables all three gates for
-the final combined run. Before using it, duplicate that scheme as an unshared
-local scheme and enable only one of these at a time for the independent runs:
+For each of Firefox, Chrome, Safari, Finder, TextEdit, and the Electron app:
 
-```text
-TABLIST_ENABLE_UNVERIFIED_SPACE_APIS=1
-TABLIST_ENABLE_UNVERIFIED_EXACT_ACTIVATION=1
-TABLIST_ENABLE_UNVERIFIED_AX_WINDOW_ID=1
-```
+1. Open three windows and confirm all three appear as separate rows.
+2. Confirm each row's title matches the window's real title.
+3. Move one window to another Space and confirm the row remains, and that
+   selecting it switches Spaces and focuses that exact window.
+4. Minimize one window and confirm the row stays, is marked Minimized, and
+   restores on activation.
+5. Hide the application and confirm its rows stay, are marked Hidden, and
+   activate correctly.
+6. Open a native tab group where the application supports one, and confirm the
+   group appears once rather than once per tab.
 
-For each flag:
+A missing row for any of these applications is a defect in discovery, not a
+configuration problem, and must be reported with a redacted diagnostics export.
 
-1. Rebuild from the recorded commit.
-2. Confirm the capability report distinguishes detected from operational.
-3. Run its complete fixture cases at least twice.
-4. Force stale windows, terminated processes, missing symbols where testable,
-   and permission loss.
-5. Confirm failure falls back or returns a typed error instead of crashing.
-6. Quit and relaunch before testing the next flag.
+### D. Validate degraded behavior
 
-Only after each capability passes independently may all validated flags be
-tested together.
+The private capabilities are probe-gated rather than flag-gated, so degradation
+is verified by removing the conditions the probes depend on:
 
-#### Space query evidence
+1. Confirm the diagnostics export lists both detected and operational masks.
+2. Where a capability's probe fails naturally on a host, confirm the app still
+   discovers and activates every window, and that only the "Visible now" scope
+   is affected.
+3. Set the scope to **Visible now** on a host without Space queries and confirm
+   the list still shows windows rather than emptying.
+4. Confirm the compatibility warning appears only when Space queries are
+   unavailable.
 
-- Every fixture window has the correct Space membership.
-- Visible Space IDs change with each display/Space transition.
-- Stage Manager and separate-Spaces configurations remain correct.
-- An invalid query disables or degrades the capability without corrupting the
-  registry.
-
-#### Exact activation evidence
-
-- The selected window, not merely its owning application, becomes focused.
-- Same-Space, cross-Space, minimized, hidden-app, full-screen, and
-  other-display activation work.
-- Focus verification identifies failure accurately.
-- A stale window ID cannot activate a different recycled window.
-- A failed verification disables the exact path for the process lifetime.
-
-#### AX-to-window-ID evidence
-
-- Mapping is exact for duplicate titles and equal geometry.
-- Mapping remains correct after retitle, move, minimize, restore, and native
-  tab changes.
-- Ambiguity fails closed.
-- Terminated or unresponsive applications do not stall other processes.
-
-#### Private capture evidence
-
-When Codex has implemented a dedicated Debug-only gate:
-
-- On macOS 15, minimized and off-Space previews capture at the requested scaled
-  size.
-- Preview pixels never appear in Caches, Application Support, logs, diagnostics,
-  or network traffic.
-- Revoking Screen Recording stops capture and purges displayed previews.
-- Backend failure retains the prior frame or icon placeholder.
-- The in-memory cache remains within 128 MiB.
-
-Do not invent an environment variable for this backend. Use the exact gate
-documented by its implementation.
-
-### D. Exercise system transitions
-
-For both public fallback and validated private paths:
+### E. Exercise system transitions
 
 - Connect and disconnect a display during a session.
 - Toggle Stage Manager.
-- Test “Displays have separate Spaces” on and off. Follow macOS's logout
+- Test "Displays have separate Spaces" on and off. Follow macOS's logout
   requirement when it changes.
 - Sleep/wake and lock/unlock.
 - Fast-user switch using non-sensitive accounts.
-- Revoke Accessibility and Screen Recording while running.
+- Revoke Accessibility while running, then grant it again.
 - Test secure input and at least one alternate keyboard layout.
 - Hold keys for repeat and perform rapid `Command-Tab` bursts.
-- Hang or pause the synthetic fixture process to exercise AX timeouts.
+- Hang or pause the synthetic fixture process to confirm that its Accessibility
+  lane times out without stalling discovery for other applications.
 
 ## Evidence to retain
 
@@ -195,11 +163,12 @@ Create one result sheet per exact Darwin build:
 | Xcode build | |
 | Mac class/chip/RAM | |
 | Display/Space configuration | |
-| Public fallback result | Pass / Fail |
-| Space ABI result | Pass / Fail / Not tested |
-| Exact activation result | Pass / Fail / Not tested |
-| AX window-ID result | Pass / Fail / Not tested |
-| Private capture result | Pass / Fail / Not implemented |
+| Detected capability mask | |
+| Operational capability mask | |
+| Discovery result per test application | Pass / Fail |
+| Cross-Space activation result | Pass / Fail |
+| Minimized and hidden-app result | Pass / Fail |
+| Degraded-scope result | Pass / Fail |
 | Redacted diagnostics reviewed | Yes / No |
 | Tester and date | |
 
@@ -209,31 +178,14 @@ Instruments traces or diagnostics outside the public repository until reviewed.
 ## Exit criteria
 
 - The full matrix passes twice on each exact build.
-- Public fallback remains usable even when every private capability is off.
-- Every passing private capability has structural and behavioral evidence.
-- No private content was captured in the evidence.
-- Failures remain disabled and documented.
+- Every test application's windows appear and activate correctly.
+- The app remains fully usable when every private capability is off.
+- No private content appears in the evidence.
 - The exact Darwin build, commit, and test result are unambiguous.
-
-## What Codex can do afterward
-
-Given the safe evidence, Codex can:
-
-1. Review logs and reject incomplete validation.
-2. Add only the passing exact Darwin build to the corresponding allowlist.
-3. Add compatibility regression tests and evidence references.
-4. Keep failed capabilities disabled.
-5. Repair registry, activation, AX, capture, or fallback defects.
-6. Generate a new Debug candidate for another pass.
-
-The human should not edit private-ABI allowlists directly. Every macOS update
-produces a new Darwin build and requires this process again.
 
 ## Official references
 
 - [Apple Accessibility API](https://developer.apple.com/documentation/applicationservices/axuielement)
 - [`AXIsProcessTrustedWithOptions`](https://developer.apple.com/documentation/applicationservices/1459186-axisprocesstrustedwithoptions)
-- [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit)
-- [Screen recording privacy controls](https://support.apple.com/guide/mac-help/control-access-to-screen-recording-mchld6aa7d23/mac)
 - [Use multiple Spaces on Mac](https://support.apple.com/guide/mac-help/work-in-multiple-spaces-mh14112/mac)
 - [Use Stage Manager on Mac](https://support.apple.com/guide/mac-help/use-stage-manager-mchl534ba392/mac)
