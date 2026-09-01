@@ -5,21 +5,14 @@ final class OnboardingViewModel: ObservableObject {
     enum Step: Int, CaseIterable {
         case welcome
         case accessibility
-        case thumbnails
         case ready
     }
 
     @Published var step: Step = .welcome
     @Published var accessibilityGranted = false
-    @Published var screenRecordingGranted = false
-    @Published var screenRecordingRestartRequired = false
-    @Published var isRequesting = false
 
     var onRequestAccessibility: (() -> Void)?
     var onOpenAccessibilitySettings: (() -> Void)?
-    var onRequestScreenRecording: (() -> Void)?
-    var onContinueWithoutThumbnails: (() -> Void)?
-    var onQuitAndReopen: (() -> Void)?
     var onReady: (() -> Void)?
     var onFinish: (() -> Void)?
 
@@ -35,7 +28,6 @@ final class OnboardingViewModel: ObservableObject {
     func showReady() {
         let isEnteringReady = step != .ready
         step = .ready
-        screenRecordingRestartRequired = false
         if isEnteringReady {
             onReady?()
         }
@@ -55,7 +47,7 @@ struct OnboardingView: View {
             Divider()
             footer
         }
-        .frame(width: 620, height: 460)
+        .frame(width: 620, height: 440)
         .background(.background)
         .accessibilityIdentifier("onboarding.root")
     }
@@ -82,30 +74,35 @@ struct OnboardingView: View {
         switch model.step {
         case .welcome:
             VStack(alignment: .leading, spacing: 20) {
-                permissionExplanation(
+                explanation(
                     symbol: "keyboard",
                     title: "A faster window switcher",
-                    body: "Hold Command and press Tab to move through every eligible macOS window. Release Command to activate the selected window."
+                    body: "Hold Command and press Tab to move through every open macOS window as a list. Release Command to activate the selected window."
                 )
-                permissionExplanation(
+                explanation(
                     symbol: "hand.raised",
                     title: "Private by design",
-                    body: "Window information and previews stay on this Mac. Tab‑List has no analytics and never uploads window titles or screenshots."
+                    body: "Window information stays on this Mac. Tab‑List has no analytics, never captures window content, and never uploads window titles."
                 )
                 Spacer()
             }
         case .accessibility:
             VStack(alignment: .leading, spacing: 20) {
-                permissionExplanation(
+                explanation(
                     symbol: "accessibility",
                     title: "Allow Accessibility",
-                    body: "This permission lets Tab‑List observe the shortcut and activate or close the window you choose."
+                    body: "This is the only permission Tab‑List needs. It lets Tab‑List read the list of open windows, observe the shortcut, and activate or close the window you choose."
                 )
-                permissionStatus(
-                    granted: model.accessibilityGranted,
-                    grantedText: "Accessibility is enabled",
-                    missingText: "Accessibility is required"
+                Label(
+                    model.accessibilityGranted
+                        ? "Accessibility is enabled"
+                        : "Accessibility is required",
+                    systemImage: model.accessibilityGranted
+                        ? "checkmark.circle.fill"
+                        : "exclamationmark.circle"
                 )
+                .foregroundStyle(model.accessibilityGranted ? .green : .orange)
+
                 HStack {
                     Button("Request Permission") {
                         model.onRequestAccessibility?()
@@ -114,53 +111,6 @@ struct OnboardingView: View {
 
                     Button("Open System Settings") {
                         model.onOpenAccessibilitySettings?()
-                    }
-                }
-                Spacer()
-            }
-        case .thumbnails:
-            VStack(alignment: .leading, spacing: 20) {
-                permissionExplanation(
-                    symbol: "rectangle.on.rectangle",
-                    title: "Window previews are optional",
-                    body: "Thumbnail mode uses Screen Recording to capture small window previews. App Icons and Titles modes never capture window content."
-                )
-                permissionStatus(
-                    granted: model.screenRecordingGranted,
-                    grantedText: "Thumbnail previews are enabled",
-                    missingText: model.screenRecordingRestartRequired
-                        ? "Restart Tab‑List to finish enabling previews"
-                        : "You can continue without previews"
-                )
-                if model.screenRecordingRestartRequired {
-                    Text("macOS accepted Screen Recording access, but this running copy of Tab‑List cannot use it yet.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-
-                    HStack {
-                        Button("Quit and Reopen Tab‑List") {
-                            model.onQuitAndReopen?()
-                        }
-                        .buttonStyle(.borderedProminent)
-
-                        continueWithoutPreviewsButton
-                    }
-                } else {
-                    HStack {
-                        Button {
-                            model.onRequestScreenRecording?()
-                        } label: {
-                            if model.isRequesting {
-                                ProgressView()
-                                    .controlSize(.small)
-                            } else {
-                                Text("Enable Thumbnails")
-                            }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(model.isRequesting)
-
-                        continueWithoutPreviewsButton
                     }
                 }
                 Spacer()
@@ -176,7 +126,7 @@ struct OnboardingView: View {
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: 430)
-                Text("Try the shortcut now. This window remains available until you choose Start Using Tab‑List.")
+                Text("Try the shortcut now. This window stays available until you choose Start Using Tab‑List.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -200,8 +150,6 @@ struct OnboardingView: View {
                 Button("Continue") { model.advance() }
                     .buttonStyle(.borderedProminent)
                     .disabled(!model.accessibilityGranted)
-            case .thumbnails:
-                EmptyView()
             case .ready:
                 Button("Start Using Tab‑List") { model.onFinish?() }
                     .buttonStyle(.borderedProminent)
@@ -210,14 +158,11 @@ struct OnboardingView: View {
         .padding(20)
     }
 
-    private var continueWithoutPreviewsButton: some View {
-        Button("Continue without previews") {
-            model.onContinueWithoutThumbnails?()
-            model.advance()
-        }
-    }
-
-    private func permissionExplanation(symbol: String, title: LocalizedStringKey, body: LocalizedStringKey) -> some View {
+    private func explanation(
+        symbol: String,
+        title: LocalizedStringKey,
+        body: LocalizedStringKey
+    ) -> some View {
         HStack(alignment: .top, spacing: 16) {
             Image(systemName: symbol)
                 .font(.system(size: 25))
@@ -228,13 +173,5 @@ struct OnboardingView: View {
                 Text(body).foregroundStyle(.secondary)
             }
         }
-    }
-
-    private func permissionStatus(granted: Bool, grantedText: LocalizedStringKey, missingText: LocalizedStringKey) -> some View {
-        Label(
-            granted ? grantedText : missingText,
-            systemImage: granted ? "checkmark.circle.fill" : "exclamationmark.circle"
-        )
-        .foregroundStyle(granted ? .green : .orange)
     }
 }

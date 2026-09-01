@@ -13,9 +13,8 @@ struct ExcludedApplication: Identifiable, Hashable {
 
 @MainActor
 final class SettingsViewModel: ObservableObject {
-    @Published private(set) var settings: SettingsV1
+    @Published private(set) var settings: TabListSettings
     @Published var accessibilityGranted = false
-    @Published var screenRecordingGranted = false
     @Published var launchAtLoginEnabled = false
     @Published var launchAtLoginRequiresApproval = false
     @Published var excludedApplications: [ExcludedApplication] = []
@@ -23,22 +22,21 @@ final class SettingsViewModel: ObservableObject {
     @Published var reverseControlValidationMessage: String?
     @Published var compatibilityWarning: String?
 
-    var onSettingsChanged: ((SettingsV1) -> Void)?
+    var onSettingsChanged: ((TabListSettings) -> Void)?
     var onShortcutChanged: ((ShortcutDefinition) async -> Bool)?
     var onLaunchAtLoginChanged: ((Bool) async -> Bool)?
     var onRequestAccessibility: (() -> Void)?
-    var onRequestScreenRecording: (() -> Void)?
     var onOpenPermissions: (() -> Void)?
     var onCheckForUpdates: (() -> Void)?
     var onExportDiagnostics: (() -> Void)?
 
-    init(settings: SettingsV1) {
+    init(settings: TabListSettings) {
         self.settings = settings.normalized()
         refreshExcludedApplications()
     }
 
     func binding<Value: Sendable>(
-        _ keyPath: WritableKeyPath<SettingsV1, Value>
+        _ keyPath: WritableKeyPath<TabListSettings, Value>
     ) -> Binding<Value> {
         Binding(
             get: { self.settings[keyPath: keyPath] },
@@ -151,22 +149,22 @@ final class SettingsViewModel: ObservableObject {
             }
     }
 
-    /// Resets only the preferences represented by `SettingsV1`.
+    /// Resets only the preferences represented by `TabListSettings`.
     ///
-    /// Launch-at-login remains owned by `SMAppService`, while Accessibility and
-    /// Screen Recording remain owned by macOS. Resetting preferences must not
-    /// mutate either external state.
+    /// Launch-at-login remains owned by `SMAppService`, while Accessibility
+    /// remains owned by macOS. Resetting preferences must not mutate either
+    /// external state.
     func resetPreferences() {
         apply(.default)
         refreshExcludedApplications()
     }
 
-    func replaceSettingsWithoutNotification(_ value: SettingsV1) {
+    func replaceSettingsWithoutNotification(_ value: TabListSettings) {
         settings = value.normalized()
         refreshExcludedApplications()
     }
 
-    private func apply(_ value: SettingsV1) {
+    private func apply(_ value: TabListSettings) {
         let normalized = value.normalized()
         settings = normalized
         onSettingsChanged?(normalized)

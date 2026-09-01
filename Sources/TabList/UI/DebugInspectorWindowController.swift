@@ -222,11 +222,7 @@ private struct DebugInspectorView: View {
             (.mainConnection, "main-connection"),
             (.spaceInventory, "space-inventory"),
             (.windowSpaceQuery, "window-space-query"),
-            (.notifications, "notifications"),
-            (.exactActivation, "exact-activation"),
-            (.hardwareCapture, "hardware-capture"),
             (.accessibilityWindowID, "AX-window-ID"),
-            (.remoteAccessibilityElement, "remote-AX"),
         ]
         let names = known.compactMap { capability, name in
             capabilities.contains(capability) ? name : nil
@@ -239,7 +235,6 @@ private struct DebugInspectorView: View {
         if window.isMinimized { states.append("minimized") }
         if window.isHidden { states.append("hidden") }
         if window.isFullscreen { states.append("fullscreen") }
-        if !window.isStandardWindow { states.append("nonstandard") }
         if !window.isClosable { states.append("not closable") }
         return states.isEmpty ? "standard" : states.joined(separator: ", ")
     }

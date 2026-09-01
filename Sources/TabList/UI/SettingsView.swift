@@ -76,263 +76,81 @@ private struct AppearanceSettingsView: View {
 
     var body: some View {
         Form {
-            Section {
-                Picker("Presentation", selection: model.binding(\.presentation)) {
-                    Label("Thumbnails", systemImage: "rectangle.on.rectangle.angled").tag(TabListCore.PresentationMode.thumbnails)
-                    Label("App Icons", systemImage: "app.dashed").tag(TabListCore.PresentationMode.appIcons)
-                    Label("Titles", systemImage: "list.bullet.rectangle").tag(TabListCore.PresentationMode.titles)
-                }
-                .pickerStyle(.segmented)
-                .accessibilityIdentifier("settings.presentation")
-
-                resourceDisclosure
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Preview") {
-                AppearancePreview(
-                    presentation: model.settings.presentation,
-                    panelSize: model.settings.panelSize,
-                    theme: model.settings.theme
-                )
-                .frame(height: 190)
-            }
-
-            Section("Panel") {
-                Picker("Size", selection: model.binding(\.panelSize)) {
-                    Text("Small").tag(PanelSize.small)
-                    Text("Medium").tag(PanelSize.medium)
-                    Text("Large").tag(PanelSize.large)
-                    Text("Auto").tag(PanelSize.auto)
-                }
-                Picker("Theme", selection: model.binding(\.theme)) {
-                    Text("System").tag(ThemePreference.system)
+            Section("Theme") {
+                Picker("Appearance", selection: model.binding(\.theme)) {
+                    Text("Match system").tag(ThemePreference.system)
                     Text("Light").tag(ThemePreference.light)
                     Text("Dark").tag(ThemePreference.dark)
                 }
-                LabeledContent("Background") {
-                    Text("Opaque")
-                        .foregroundStyle(.secondary)
-                }
+                .accessibilityIdentifier("settings.theme")
+            }
+
+            Section("Preview") {
+                ListPreview()
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+            }
+
+            Section {
+                Label(
+                    "Tab‑List shows one row per window: application, window title, and state.",
+                    systemImage: "list.bullet"
+                )
+                .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
     }
-
-    @ViewBuilder
-    private var resourceDisclosure: some View {
-        switch model.settings.presentation {
-        case .thumbnails:
-            Label(
-                "Uses Screen Recording and keeps a bounded in-memory preview cache.",
-                systemImage: "memorychip"
-            )
-        case .appIcons:
-            Label("Low resource use; app icons are cached.", systemImage: "leaf")
-        case .titles:
-            Label("Lowest resource use; no window content is captured.", systemImage: "leaf.fill")
-        }
-    }
 }
 
-private struct AppearancePreview: View {
-    let presentation: TabListCore.PresentationMode
-    let panelSize: PanelSize
-    let theme: ThemePreference
+private struct ListPreview: View {
+    private static let rows: [(application: String, title: String, state: String?)] = [
+        ("Firefox", "Release notes — Mozilla", nil),
+        ("Xcode", "TabList.xcodeproj", nil),
+        ("Notes", "Weekly plan", "Minimized"),
+    ]
 
     var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [.blue.opacity(0.45), .purple.opacity(0.40), .green.opacity(0.30)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-
-            previewItems
-            .padding(16)
-            .frame(width: previewPanelWidth)
-            .background(background)
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .shadow(radius: 10, y: 5)
-            .padding(24)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-    }
-
-    @ViewBuilder
-    private var previewItems: some View {
-        if presentation == .titles {
-            VStack(spacing: 7) {
-                ForEach(0..<3, id: \.self) { index in
-                    previewItem(index)
-                }
-            }
-        } else {
-            HStack(spacing: 10) {
-                ForEach(0..<3, id: \.self) { index in
-                    previewItem(index)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func previewItem(_ index: Int) -> some View {
-        let symbols = ["safari", "folder", "doc.text"]
-        let titles = [
-            String(
-                localized: "settings.preview.title.research",
-                defaultValue: "Research",
-                comment: "Sample window title in the appearance preview."
-            ),
-            String(
-                localized: "settings.preview.title.projects",
-                defaultValue: "Projects",
-                comment: "Sample window title in the appearance preview."
-            ),
-            String(
-                localized: "settings.preview.title.notes",
-                defaultValue: "Notes",
-                comment: "Sample window title in the appearance preview."
-            ),
-        ]
-        let applicationNames = [
-            String(
-                localized: "settings.preview.application.safari",
-                defaultValue: "Safari",
-                comment: "Sample application name in the appearance preview."
-            ),
-            String(
-                localized: "settings.preview.application.finder",
-                defaultValue: "Finder",
-                comment: "Sample application name in the appearance preview."
-            ),
-            String(
-                localized: "settings.preview.application.textedit",
-                defaultValue: "TextEdit",
-                comment: "Sample application name in the appearance preview."
-            ),
-        ]
-        switch presentation {
-        case .thumbnails:
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 4) {
-                    Image(systemName: symbols[index])
-                        .font(.system(size: 10, weight: .semibold))
-                        .frame(width: 12, height: 12)
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(verbatim: applicationNames[index])
-                            .font(.system(size: 7, weight: .semibold))
-                        Text(verbatim: titles[index])
-                            .font(.system(size: 6))
-                            .foregroundStyle(.secondary)
+        VStack(spacing: 0) {
+            ForEach(Self.rows.indices, id: \.self) { index in
+                let row = Self.rows[index]
+                HStack(spacing: 10) {
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(Color.primary.opacity(0.18))
+                        .frame(width: 22, height: 22)
+                    Text(row.application)
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 78, alignment: .leading)
+                    Text(row.title)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                    if let state = row.state {
+                        Text(state)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.tertiary)
                     }
-                    .lineLimit(1)
-                    Spacer(minLength: 0)
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 8))
-                        .foregroundStyle(.tertiary)
                 }
-                RoundedRectangle(cornerRadius: 5)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color.accentColor.opacity(0.22),
-                                Color.primary.opacity(0.04),
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
+                .padding(.horizontal, 12)
+                .frame(height: 36)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(
+                            index == 0
+                                ? Color.accentColor.opacity(0.25)
+                                : Color.clear
                         )
-                    )
-                    .overlay(alignment: .top) {
-                        VStack(spacing: 4) {
-                            RoundedRectangle(cornerRadius: 2)
-                                .fill(Color.primary.opacity(0.10))
-                                .frame(height: 7)
-                            HStack(spacing: 4) {
-                                RoundedRectangle(cornerRadius: 2)
-                                    .fill(Color.primary.opacity(0.08))
-                                    .frame(width: 18)
-                                VStack(spacing: 3) {
-                                    ForEach(0..<4, id: \.self) { line in
-                                        RoundedRectangle(cornerRadius: 1)
-                                            .fill(Color.primary.opacity(line == 0 ? 0.18 : 0.10))
-                                            .frame(height: 3)
-                                    }
-                                    Spacer(minLength: 0)
-                                }
-                            }
-                            .padding(.horizontal, 5)
-                            .padding(.bottom, 5)
-                        }
-                        .padding(4)
-                    }
+                        .padding(.horizontal, 4)
+                )
             }
-            .padding(6)
-            .frame(width: previewTileWidth, height: 100)
-            .background(index == 0 ? Color.accentColor.opacity(0.16) : Color.primary.opacity(0.04))
-            .overlay {
-                RoundedRectangle(cornerRadius: 9)
-                    .stroke(index == 0 ? Color.accentColor : .clear, lineWidth: 3)
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 9))
-        case .appIcons:
-            VStack(spacing: 7) {
-                Image(systemName: symbols[index]).font(.system(size: 34))
-                Text(verbatim: titles[index])
-                    .font(.caption.bold())
-                    .lineLimit(1)
-            }
-            .frame(width: previewTileWidth, height: 90)
-            .background(index == 0 ? Color.accentColor.opacity(0.16) : Color.primary.opacity(0.04))
-            .clipShape(RoundedRectangle(cornerRadius: 9))
-        case .titles:
-            HStack(spacing: 8) {
-                Image(systemName: symbols[index])
-                    .frame(width: 22)
-                Text(verbatim: applicationNames[index])
-                    .font(.caption.bold())
-                    .frame(width: 70, alignment: .leading)
-                Text(verbatim: titles[index])
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-            }
-            .padding(.horizontal, 9)
-            .frame(width: previewPanelWidth - 32, height: 34)
-            .background(index == 0 ? Color.accentColor.opacity(0.16) : Color.primary.opacity(0.04))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
         }
-    }
-
-    private var background: some ShapeStyle {
-        switch theme {
-        case .system:
-            AnyShapeStyle(Color(nsColor: .windowBackgroundColor))
-        case .light:
-            AnyShapeStyle(Color.white)
-        case .dark:
-            AnyShapeStyle(Color.black)
-        }
-    }
-
-    private var previewPanelWidth: CGFloat {
-        switch panelSize {
-        case .small: 300
-        case .medium: 370
-        case .large: 440
-        case .auto: 370
-        }
-    }
-
-    private var previewTileWidth: CGFloat {
-        switch panelSize {
-        case .small: 82
-        case .medium: 105
-        case .large: 126
-        case .auto: 105
-        }
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.primary.opacity(0.05))
+        )
+        .accessibilityHidden(true)
     }
 }
 
@@ -713,16 +531,6 @@ private struct GeneralSettingsView: View {
                 Toggle("Show menu-bar icon", isOn: model.binding(\.showMenuBarIcon))
             }
 
-            Section("Thumbnails") {
-                Toggle(
-                    "Refresh thumbnails in the background",
-                    isOn: model.binding(\.refreshThumbnailsInBackground)
-                )
-                Text("Off is recommended for the lowest idle CPU use. Cached previews still appear immediately after they have been captured once.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
             Section("Updates") {
                 Toggle(
                     "Automatically check for updates",
@@ -735,7 +543,6 @@ private struct GeneralSettingsView: View {
 
             Section("Permissions") {
                 statusRow("Accessibility", granted: model.accessibilityGranted)
-                statusRow("Thumbnail previews", granted: model.screenRecordingGranted)
 #if DEBUG
                 if !model.accessibilityGranted {
                     Text("Debug build: if macOS still shows Tab‑List as enabled, quit Tab‑List, run Scripts/reset_debug_accessibility.sh, relaunch, and grant Accessibility again.")
@@ -747,9 +554,6 @@ private struct GeneralSettingsView: View {
                     Button("Open Permissions…") { model.onOpenPermissions?() }
                     if !model.accessibilityGranted {
                         Button("Request Accessibility") { model.onRequestAccessibility?() }
-                    }
-                    if !model.screenRecordingGranted {
-                        Button("Enable Thumbnails") { model.onRequestScreenRecording?() }
                     }
                 }
             }
@@ -799,7 +603,7 @@ private struct GeneralSettingsView: View {
                 String(
                     localized: "settings.reset.confirmation.message",
                     defaultValue:
-                        "This restores all preferences stored by Tab‑List, including appearance, shortcut, filters, exceptions, update checks, and the menu-bar icon. Launch at Login and macOS permissions are not changed.",
+                        "This restores all preferences stored by Tab‑List, including theme, shortcut, filters, exceptions, update checks, and the menu-bar icon. Launch at Login and macOS permissions are not changed.",
                     comment:
                         "Explains the exact scope of resetting preferences."
                 )
@@ -858,7 +662,7 @@ private struct AboutSettingsView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 430)
-            Text("No analytics. No window screenshots on disk.")
+            Text("No analytics. No window content is ever captured.")
                 .font(.callout.weight(.medium))
             Spacer()
         }

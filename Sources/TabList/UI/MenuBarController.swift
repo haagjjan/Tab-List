@@ -19,7 +19,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let compatibilityItem = NSMenuItem()
     private var isEnabled = true
     private var accessibilityGranted = false
-    private var screenRecordingGranted = false
 
     override init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -39,16 +38,15 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         statusItem.button?.contentTintColor = enabled ? nil : .tertiaryLabelColor
     }
 
-    func updatePermissions(accessibility: Bool, screenRecording: Bool) {
+    func updatePermissions(accessibility: Bool) {
         accessibilityGranted = accessibility
-        screenRecordingGranted = screenRecording
         updatePermissionItem()
     }
 
     func updateCompatibilityWarning(_ warning: String?) {
         compatibilityItem.isHidden = warning == nil
         compatibilityItem.title = String(
-            localized: "Compatibility mode — some advanced window features are limited"
+            localized: "Space filtering is unavailable on this system"
         )
         compatibilityItem.toolTip = warning
     }
@@ -130,11 +128,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     private func updatePermissionItem() {
-        let accessibility = accessibilityGranted ? "✓" : "!"
-        let recording = screenRecordingGranted ? "✓" : "–"
-        permissionItem.title = String(
-            localized: "Permissions  Accessibility \(accessibility)  Thumbnails \(recording)"
-        )
+        permissionItem.title = accessibilityGranted
+            ? String(localized: "Accessibility is enabled")
+            : String(localized: "Accessibility permission required")
     }
 
     @objc private func openSettings() {
