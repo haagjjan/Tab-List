@@ -78,13 +78,7 @@ Scripts/reset_debug_accessibility.sh
 5. Enable the newly listed Tab‑List entry.
 6. Stop and restart the application once.
 
-For Thumbnail mode, if required:
-
-```sh
-tccutil reset ScreenCapture com.haagjjan.TabList
-```
-
-Then launch again, select **Enable Thumbnails**, grant Screen Recording, and restart Tab‑List.
+Accessibility is the only permission Tab‑List uses.
 
 ### 6. Test the change
 
@@ -95,7 +89,7 @@ pgrep -afil '/TabList.app/Contents/MacOS/TabList'
 ```
 
 There should be exactly one result, pointing to the Xcode Debug product.
-sd
+
 ### 7. Finish the test session
 
 Use one of:
