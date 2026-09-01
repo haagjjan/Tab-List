@@ -20,8 +20,7 @@ struct DiagnosticsServiceTests {
             visibleSpaceIDs: [1]
         )
         let permissions = SystemPermissionSnapshot(
-            accessibility: .authorized,
-            screenRecording: .denied
+            accessibility: .authorized
         )
         let capabilities = WindowServerCapabilityReport(
             detected: [],
@@ -46,12 +45,88 @@ struct DiagnosticsServiceTests {
         XCTAssertFalse(json.contains("com.example.SensitiveApp"))
         XCTAssertTrue(first.windows[0].hasTitle)
         XCTAssertEqual(
-            first.windows[0].identityConfidence,
-            .unverified
+            first.windows[0].identitySource,
+            .accessibilityOrdinal
         )
         XCTAssertNotEqual(
             first.windows[0].bundleIdentifierHash,
             second.windows[0].bundleIdentifierHash
         )
+    }
+}
+
+@Suite
+struct DiagnosticsReportContentTests {
+    private func report(
+        windows: [WindowRecord],
+        capabilities: WindowServerCapabilities = [.mainConnection]
+    ) -> DiagnosticsReport {
+        DiagnosticsService.makeReport(
+            permissions: SystemPermissionSnapshot(accessibility: .authorized),
+            capabilities: WindowServerCapabilityReport(
+                detected: [.mainConnection, .accessibilityWindowID],
+                operational: capabilities,
+                frameworkPath: "/System/Library/PrivateFrameworks/Example"
+            ),
+            snapshot: WindowSnapshot(
+                generation: 12,
+                windows: windows,
+                visibleSpaceIDs: [3, 4]
+            )
+        )
+    }
+
+    @Test
+    func testTheReportCarriesRegistryAndCapabilityContext() {
+        let value = report(windows: [AppTestFixtures.window(1)])
+
+        XCTAssertEqual(value.registryGeneration, 12)
+        XCTAssertEqual(value.visibleSpaceCount, 2)
+        XCTAssertEqual(value.windows.count, 1)
+        XCTAssertEqual(
+            value.windowServerCapabilities.operational,
+            [.mainConnection]
+        )
+    }
+
+    @Test
+    func testEveryWindowStateIsPreservedForTriage() throws {
+        let value = report(
+            windows: [
+                AppTestFixtures.window(
+                    5,
+                    title: "",
+                    isMinimized: true,
+                    isHidden: true,
+                    isFullscreen: true,
+                    isClosable: false
+                ),
+            ]
+        )
+        let window = try XCTUnwrap(value.windows.first)
+
+        XCTAssertFalse(window.hasTitle)
+        XCTAssertTrue(window.isMinimized)
+        XCTAssertTrue(window.isHidden)
+        XCTAssertTrue(window.isFullscreen)
+        XCTAssertFalse(window.isClosable)
+    }
+
+    @Test
+    func testAnEmptyRegistryStillProducesAValidExport() throws {
+        let encoded = try DiagnosticsService.encoded(report(windows: []))
+
+        XCTAssertTrue(encoded.count > 0)
+        XCTAssertTrue(report(windows: []).windows.isEmpty)
+    }
+
+    @Test
+    func testTheExportIsDeterministicallyOrdered() throws {
+        let value = report(windows: [AppTestFixtures.window(1)])
+
+        let first = try DiagnosticsService.encoded(value)
+        let second = try DiagnosticsService.encoded(value)
+
+        XCTAssertEqual(first, second)
     }
 }
