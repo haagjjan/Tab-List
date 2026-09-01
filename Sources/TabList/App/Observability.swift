@@ -23,10 +23,6 @@ enum TabListLog {
         subsystem: subsystem,
         category: "window-actions"
     )
-    static let thumbnails = Logger(
-        subsystem: subsystem,
-        category: "thumbnails"
-    )
     static let updates = Logger(
         subsystem: subsystem,
         category: "updates"
