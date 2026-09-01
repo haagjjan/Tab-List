@@ -170,10 +170,11 @@ Using the release checklist and synthetic data:
 
 1. Complete onboarding.
 2. Grant Accessibility and verify that denial/revocation states remain safe.
-3. Skip Screen Recording and confirm App Icon and Title modes work.
-4. Grant Screen Recording and confirm Thumbnail mode.
-5. Verify three Firefox windows appear as three separate items in every mode.
-6. Verify:
+3. Verify three Firefox windows appear as three separate rows, each showing
+   its own window title.
+4. Repeat that check with Chrome, Safari, Finder, TextEdit, and one Electron
+   application.
+5. Verify:
    - Forward and reverse cycling.
    - Release-to-commit.
    - Escape cancellation.
@@ -181,16 +182,17 @@ Using the release checklist and synthetic data:
    - Mouse activation.
    - Minimized, hidden, full-screen, cross-Space, and cross-display windows.
    - Browser window titles reflect the active browser tab when exposed.
-7. Confirm an unsaved-document close prompt activates the app and leaves the
+6. Confirm an unsaved-document close prompt activates the app and leaves the
    decision to the user.
-8. Confirm temporary disable and Quit immediately restore native
+7. Confirm temporary disable and Quit immediately restore native
    `Command-Tab`.
-9. Confirm Launch at Login reflects macOS approval state.
-10. Confirm permission revocation stops affected services.
-11. Confirm no thumbnail files appear in Caches or Application Support.
-12. Confirm network traffic is limited to the GitHub-hosted Sparkle update
+8. Confirm Launch at Login reflects macOS approval state.
+9. Confirm revoking Accessibility stops all switcher behavior and that granting
+   it again restores the list without a relaunch.
+10. Confirm no window image file appears in Caches or Application Support.
+11. Confirm network traffic is limited to the GitHub-hosted Sparkle update
     check/download.
-13. Review exported diagnostics before sharing.
+12. Review exported diagnostics before sharing.
 
 ### E. Update acceptance
 
