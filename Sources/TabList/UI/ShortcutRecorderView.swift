@@ -19,7 +19,11 @@ struct ShortcutRecorderView: NSViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onRecorded: onRecorded, restingLabel: restingLabel)
+        Coordinator(
+            onRecorded: onRecorded,
+            restingLabel: restingLabel,
+            currentShortcut: shortcut
+        )
     }
 
     func makeNSView(context: Context) -> NSButton {
@@ -31,10 +35,11 @@ struct ShortcutRecorderView: NSViewRepresentable {
     }
 
     func updateNSView(_ button: NSButton, context: Context) {
-        guard !context.coordinator.isRecording else { return }
-        button.title = restingLabel ?? displayString(shortcut)
         context.coordinator.onRecorded = onRecorded
         context.coordinator.restingLabel = restingLabel
+        context.coordinator.currentShortcut = shortcut
+        guard !context.coordinator.isRecording else { return }
+        button.title = restingLabel ?? displayString(shortcut)
     }
 
     private func displayString(_ shortcut: ShortcutDefinition) -> String {
@@ -102,16 +107,19 @@ struct ShortcutRecorderView: NSViewRepresentable {
     final class Coordinator: NSObject {
         var onRecorded: (ShortcutDefinition) -> Void
         var restingLabel: String?
+        var currentShortcut: ShortcutDefinition
         weak var button: NSButton?
         var isRecording = false
         private var monitor: Any?
 
         init(
             onRecorded: @escaping (ShortcutDefinition) -> Void,
-            restingLabel: String?
+            restingLabel: String?,
+            currentShortcut: ShortcutDefinition
         ) {
             self.onRecorded = onRecorded
             self.restingLabel = restingLabel
+            self.currentShortcut = currentShortcut
         }
 
         isolated deinit {
@@ -144,7 +152,9 @@ struct ShortcutRecorderView: NSViewRepresentable {
             }
         }
 
-        private func stopRecording(displaying shortcut: ShortcutDefinition? = nil) {
+        private func stopRecording(
+            displaying shortcut: ShortcutDefinition? = nil
+        ) {
             if let monitor {
                 NSEvent.removeMonitor(monitor)
                 self.monitor = nil
@@ -152,11 +162,10 @@ struct ShortcutRecorderView: NSViewRepresentable {
             isRecording = false
             button?.state = .off
             if let shortcut {
-                button?.title = restingLabel
-                    ?? ShortcutRecorderView.displayString(shortcut)
-            } else if let restingLabel {
-                button?.title = restingLabel
+                currentShortcut = shortcut
             }
+            button?.title = restingLabel
+                ?? ShortcutRecorderView.displayString(currentShortcut)
         }
 
         private static func modifiers(from flags: NSEvent.ModifierFlags) -> ShortcutModifiers {
