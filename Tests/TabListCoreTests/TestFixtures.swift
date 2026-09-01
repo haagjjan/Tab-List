@@ -19,16 +19,16 @@ enum TestFixtures {
         isMinimized: Bool = false,
         isHidden: Bool = false,
         isFullscreen: Bool = false,
-        isStandardWindow: Bool = true,
         isClosable: Bool = true,
-        isActionable: Bool = true,
         focusSequence: UInt64 = 0
     ) -> WindowRecord {
         WindowRecord(
             id: key(value, pid: pid),
             bundleIdentifier: bundleIdentifier,
             applicationName: applicationName,
-            bundleURL: URL(fileURLWithPath: "/Applications/\(applicationName).app"),
+            bundleURL: URL(
+                fileURLWithPath: "/Applications/\(applicationName).app"
+            ),
             windowTitle: title,
             bounds: bounds,
             spaceIDs: spaceIDs,
@@ -36,25 +36,21 @@ enum TestFixtures {
             isMinimized: isMinimized,
             isHidden: isHidden,
             isFullscreen: isFullscreen,
-            isStandardWindow: isStandardWindow,
             isClosable: isClosable,
-            isActionable: isActionable,
             lastFocusSequence: focusSequence
         )
     }
 
     static func classificationInput(
-        titleIndependentOwnerName: String = "Example",
+        ownerName: String = "Example",
         role: String? = "AXWindow",
         subrole: String? = "AXStandardWindow"
     ) -> WindowClassificationInput {
         WindowClassificationInput(
             ownerBundleIdentifier: "com.example.App",
-            ownerName: titleIndependentOwnerName,
+            ownerName: ownerName,
             ownerActivationPolicy: .regular,
             bounds: CGRect(x: 0, y: 0, width: 500, height: 400),
-            layer: 0,
-            alpha: 1,
             accessibilityRole: role,
             accessibilitySubrole: subrole
         )
