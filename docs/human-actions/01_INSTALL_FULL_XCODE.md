@@ -112,8 +112,8 @@ Once the human action is complete, Codex can:
 6. Repair test, build, or project-generation failures that do not require new
    credentials or permissions.
 
-Completion of this task does not grant Accessibility or Screen Recording
-permission; those remain explicit hands-on test actions.
+Completion of this task does not grant Accessibility permission; that remains an
+explicit hands-on test action.
 
 ## Official references
 
