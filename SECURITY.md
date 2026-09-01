@@ -16,7 +16,7 @@ Include:
 
 - The affected Tab-List version and macOS version/build.
 - Reproduction steps and expected security boundary.
-- Whether Accessibility or Screen Recording was granted.
+- Whether Accessibility was granted.
 - The smallest sanitized proof of concept.
 - Any evidence of network transmission, persistence, privilege escalation, signature failure, or unintended window control.
 
@@ -26,7 +26,7 @@ You should receive an acknowledgement within seven days. Please allow time for t
 
 ## Security invariants
 
-- Window screenshots do not intentionally leave memory or cross the network.
+- Window content is never captured, persisted, or transmitted.
 - Window titles are private in normal logs.
 - Release artifacts require Developer ID signing, Hardened Runtime, notarization, and Sparkle EdDSA verification.
 - Release secrets stay in protected CI secret storage and are never printed.
