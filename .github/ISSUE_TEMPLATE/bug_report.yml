@@ -32,17 +32,6 @@ body:
         - Unknown
     validations:
       required: true
-  - type: dropdown
-    id: screen_recording
-    attributes:
-      label: Screen Recording permission
-      options:
-        - Granted
-        - Denied
-        - Not requested
-        - Unknown
-    validations:
-      required: true
   - type: textarea
     id: displays_spaces
     attributes:
