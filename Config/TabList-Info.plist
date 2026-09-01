@@ -26,8 +26,6 @@
 	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © 2026 Jan Haag. Released under the MIT License.</string>
-	<key>NSScreenCaptureUsageDescription</key>
-	<string>Tab‑List captures scaled previews of open windows when Thumbnail mode is enabled.</string>
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
 	<key>SUEnableSystemProfiling</key>
