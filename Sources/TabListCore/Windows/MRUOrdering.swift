@@ -36,28 +36,17 @@ public struct WindowMRUTracker: Sendable {
         sequences[key] ?? 0
     }
 
-    /// Seeds startup z-order. `frontToBack` must be the WindowServer order.
-    /// Existing focus evidence is retained, and later unknown windows sort last.
-    public mutating func seed(
-        frontToBack keys: [WindowKey],
-        knownVisibleKeys: Set<WindowKey>? = nil
-    ) {
+    /// Seeds the startup order. `frontToBack` must be the discovered stacking
+    /// order. Existing focus evidence is retained and later unknown windows
+    /// sort last.
+    public mutating func seed(frontToBack keys: [WindowKey]) {
         guard sequences.isEmpty else {
             for key in keys where sequences[key] == nil {
                 sequences[key] = 0
             }
             return
         }
-
-        let seedOrder: [WindowKey]
-        if let knownVisibleKeys {
-            seedOrder = keys.filter(knownVisibleKeys.contains)
-                + keys.filter { !knownVisibleKeys.contains($0) }
-        } else {
-            seedOrder = keys
-        }
-
-        for key in seedOrder.reversed() {
+        for key in keys.reversed() {
             sequences[key] = nextSequence()
         }
     }

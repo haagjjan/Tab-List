@@ -87,7 +87,6 @@ private func makeWindows(count: Int) -> [WindowRecord] {
                 isMinimized: index.isMultiple(of: 10),
                 isHidden: index.isMultiple(of: 17),
                 isFullscreen: index.isMultiple(of: 19),
-                isStandardWindow: true,
                 isClosable: true,
                 lastFocusSequence: UInt64(count - index),
                 incarnation: UInt64(index + 1)
@@ -164,9 +163,7 @@ private let results = [
         budgetMilliseconds: 16
     ) {
         consume(
-            LayoutCalculator.metrics(
-                preset: .auto,
-                presentation: .thumbnails,
+            PanelLayoutCalculator.layout(
                 displayVisibleFrame: CGRect(
                     x: 0,
                     y: 0,
@@ -178,23 +175,13 @@ private let results = [
         )
     },
     benchmark(
-        name: "thumbnail-capture-plan",
+        name: "snapshot-lookup",
         windowCount: windows.count,
         samples: 40,
-        iterationsPerSample: 2_000,
+        iterationsPerSample: 5_000,
         budgetMilliseconds: 16
     ) {
-        consume(
-            ThumbnailCapturePlan(
-                allKeys: windows.map(\.id),
-                priorityKeys: [
-                    windows[50].id,
-                    windows[49].id,
-                    windows[51].id,
-                ],
-                visibleKeys: windows.prefix(24).map(\.id)
-            )
-        )
+        consume(snapshot.window(for: windows[windows.count - 1].id))
     },
 ]
 

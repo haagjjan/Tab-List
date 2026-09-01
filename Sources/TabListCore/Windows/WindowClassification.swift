@@ -17,51 +17,32 @@ public enum WindowOwnerActivationPolicy: String, Equatable, Sendable {
     }
 }
 
-/// Raw facts used to decide whether a WindowServer surface represents a
-/// user-switchable window.
+/// Facts read from one Accessibility window element and its owning process.
 public struct WindowClassificationInput: Equatable, Sendable {
     public var ownerBundleIdentifier: String?
     public var ownerName: String
     public var ownerActivationPolicy: WindowOwnerActivationPolicy
     public var bounds: CGRect
-    public var layer: Int
-    public var alpha: Double
     public var accessibilityRole: String?
     public var accessibilitySubrole: String?
     public var isOwnedByTabList: Bool
-    public var isDesktopElement: Bool
-    public var isNotification: Bool
-    public var isTabGroupChild: Bool
-    public var isTransparentSurface: Bool
 
     public init(
         ownerBundleIdentifier: String?,
         ownerName: String,
         ownerActivationPolicy: WindowOwnerActivationPolicy = .unknown,
         bounds: CGRect,
-        layer: Int,
-        alpha: Double,
         accessibilityRole: String?,
         accessibilitySubrole: String?,
-        isOwnedByTabList: Bool = false,
-        isDesktopElement: Bool = false,
-        isNotification: Bool = false,
-        isTabGroupChild: Bool = false,
-        isTransparentSurface: Bool = false
+        isOwnedByTabList: Bool = false
     ) {
         self.ownerBundleIdentifier = ownerBundleIdentifier
         self.ownerName = ownerName
         self.ownerActivationPolicy = ownerActivationPolicy
         self.bounds = bounds
-        self.layer = layer
-        self.alpha = alpha
         self.accessibilityRole = accessibilityRole
         self.accessibilitySubrole = accessibilitySubrole
         self.isOwnedByTabList = isOwnedByTabList
-        self.isDesktopElement = isDesktopElement
-        self.isNotification = isNotification
-        self.isTabGroupChild = isTabGroupChild
-        self.isTransparentSurface = isTransparentSurface
     }
 }
 
@@ -69,14 +50,26 @@ public enum WindowExclusionReason: Equatable, Sendable {
     case ownApplication
     case systemSurface
     case nonUserApplication(WindowOwnerActivationPolicy)
-    case nonzeroLayer
     case invalidGeometry
-    case invisibleSurface
-    case desktopElement
-    case notification
-    case inactiveTab
     case unsupportedRole(String)
     case unsupportedSubrole(String)
+
+    public var diagnosticCode: String {
+        switch self {
+        case .ownApplication:
+            "own-application"
+        case .systemSurface:
+            "system-surface"
+        case let .nonUserApplication(policy):
+            "non-user-application-\(policy.rawValue)"
+        case .invalidGeometry:
+            "invalid-geometry"
+        case let .unsupportedRole(role):
+            "unsupported-role-\(role)"
+        case let .unsupportedSubrole(subrole):
+            "unsupported-subrole-\(subrole)"
+        }
+    }
 }
 
 public enum WindowClassification: Equatable, Sendable {
@@ -88,19 +81,17 @@ public enum WindowClassification: Equatable, Sendable {
     }
 }
 
-/// Conservative classification based on independent WindowServer and
-/// Accessibility facts. Window titles are intentionally not considered.
+/// Decides whether one Accessibility window is a user-switchable window.
+///
+/// The rule set is deliberately permissive: an unfamiliar subrole is accepted
+/// rather than dropped, because a window that macOS exposes as a top-level
+/// `AXWindow` is one the user can switch to. Only surfaces that are provably
+/// not switchable — panels, palettes, system chrome — are excluded. Window
+/// titles are never considered.
 public enum WindowClassifier {
     private static let acceptedRoles: Set<String> = [
         "AXWindow",
         "AXDialog",
-        "AXSheet",
-    ]
-
-    private static let acceptedSubroles: Set<String> = [
-        "AXStandardWindow",
-        "AXDialog",
-        "AXSystemDialog",
     ]
 
     private static let excludedSubroles: Set<String> = [
@@ -109,27 +100,35 @@ public enum WindowClassifier {
         "AXUnknown",
     ]
 
-    private static let excludedSystemBundleIdentifiers: Set<String> = [
+    private static let excludedBundleIdentifiers: Set<String> = [
         "com.apple.dock",
         "com.apple.notificationcenterui",
         "com.apple.controlcenter",
+        "com.apple.wallpaper.agent",
+        "com.apple.windowmanager",
     ]
 
-    private static let minimumUserWindowWidth: CGFloat = 80
-    private static let minimumUserWindowHeight: CGFloat = 64
+    private static let excludedOwnerNames: Set<String> = [
+        "window server",
+        "dock",
+        "notification center",
+    ]
 
-    public static func classify(_ input: WindowClassificationInput) -> WindowClassification {
+    private static let minimumWindowEdge: CGFloat = 32
+
+    public static func classify(
+        _ input: WindowClassificationInput
+    ) -> WindowClassification {
         if input.isOwnedByTabList {
             return .excluded(.ownApplication)
         }
 
-        let normalizedBundleIdentifier = input.ownerBundleIdentifier?.lowercased()
-        let normalizedOwnerName = input.ownerName
+        let identifier = input.ownerBundleIdentifier?.lowercased()
+        let ownerName = input.ownerName
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
-        if normalizedBundleIdentifier.map(excludedSystemBundleIdentifiers.contains) == true
-            || normalizedOwnerName == "window server"
-            || normalizedOwnerName == "dock"
+        if identifier.map(excludedBundleIdentifiers.contains) == true
+            || excludedOwnerNames.contains(ownerName)
         {
             return .excluded(.systemSurface)
         }
@@ -140,8 +139,16 @@ public enum WindowClassifier {
             )
         }
 
-        guard input.layer == 0 else {
-            return .excluded(.nonzeroLayer)
+        if let role = input.accessibilityRole,
+           !acceptedRoles.contains(role)
+        {
+            return .excluded(.unsupportedRole(role))
+        }
+
+        if let subrole = input.accessibilitySubrole,
+           excludedSubroles.contains(subrole)
+        {
+            return .excluded(.unsupportedSubrole(subrole))
         }
 
         let bounds = input.bounds
@@ -149,42 +156,10 @@ public enum WindowClassifier {
               bounds.origin.y.isFinite,
               bounds.width.isFinite,
               bounds.height.isFinite,
-              bounds.width >= minimumUserWindowWidth,
-              bounds.height >= minimumUserWindowHeight
+              bounds.width >= minimumWindowEdge,
+              bounds.height >= minimumWindowEdge
         else {
             return .excluded(.invalidGeometry)
-        }
-
-        guard input.alpha.isFinite,
-              input.alpha > 0.01,
-              !input.isTransparentSurface
-        else {
-            return .excluded(.invisibleSurface)
-        }
-
-        if input.isDesktopElement {
-            return .excluded(.desktopElement)
-        }
-        if input.isNotification {
-            return .excluded(.notification)
-        }
-        if input.isTabGroupChild {
-            return .excluded(.inactiveTab)
-        }
-
-        if let role = input.accessibilityRole,
-           !acceptedRoles.contains(role)
-        {
-            return .excluded(.unsupportedRole(role))
-        }
-
-        if let subrole = input.accessibilitySubrole {
-            if excludedSubroles.contains(subrole) {
-                return .excluded(.unsupportedSubrole(subrole))
-            }
-            if !acceptedSubroles.contains(subrole) {
-                return .excluded(.unsupportedSubrole(subrole))
-            }
         }
 
         return .standard
