@@ -4,11 +4,99 @@ private final class FlippedFixtureDocumentView: NSView {
     override var isFlipped: Bool { true }
 }
 
+// Where the fixture puts its windows. The CI runners drive a 1024x768 screen,
+// small enough that the controls (previously centred) and the scenario windows
+// (previously cascading from a fixed screen origin) landed on top of each
+// other: the controls ended up buried and their buttons unclickable, by hand
+// and by XCUITest. Giving the controls their own column and confining every
+// scenario window to the area beside it keeps the two apart on any screen.
+@MainActor
+private struct FixtureLayout {
+    let controlFrame: NSRect
+    let scenarioArea: NSRect
+
+    init() {
+        let visible = NSScreen.main?.visibleFrame
+            ?? NSScreen.screens.first?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 1024, height: 768)
+        // A window flush against the menu bar stops XCUITest from resolving a
+        // hit point inside it, so the controls always keep a margin.
+        let margin: CGFloat = 24
+        // Full width whenever the screen can also host a usable scenario
+        // area, so the button column never needs horizontal scrolling.
+        let controlWidth = min(500, max(visible.width - margin * 3 - 320, 320))
+        let controlHeight = min(780, max(visible.height - margin * 2, 320))
+        controlFrame = NSRect(
+            x: visible.minX + margin,
+            y: visible.midY - controlHeight / 2,
+            width: controlWidth,
+            height: controlHeight
+        )
+
+        let scenarioMinX = controlFrame.maxX + margin
+        scenarioArea = NSRect(
+            x: scenarioMinX,
+            y: visible.minY + margin,
+            width: max(visible.maxX - scenarioMinX, 320),
+            height: max(visible.height - margin * 2, 320)
+        )
+    }
+
+    /// Places a scenario window inside its own area, cascaded by `serial` and
+    /// wrapped so that even a hundred windows stay clear of the controls.
+    func scenarioContentRect(
+        width: CGFloat,
+        height: CGFloat,
+        styleMask: NSWindow.StyleMask,
+        serial: Int
+    ) -> NSRect {
+        let requested = NSWindow.frameRect(
+            forContentRect: NSRect(x: 0, y: 0, width: width, height: height),
+            styleMask: styleMask
+        )
+        let size = NSSize(
+            width: min(requested.width, scenarioArea.width),
+            height: min(requested.height, scenarioArea.height)
+        )
+        let cascade = CGFloat(serial) * 14
+        let frame = NSRect(
+            x: scenarioArea.minX
+                + cascade.truncatingRemainder(
+                    dividingBy: max(scenarioArea.width - size.width, 1)
+                ),
+            y: scenarioArea.maxY - size.height
+                - cascade.truncatingRemainder(
+                    dividingBy: max(scenarioArea.height - size.height, 1)
+                ),
+            width: size.width,
+            height: size.height
+        )
+        return NSWindow.contentRect(forFrameRect: frame, styleMask: styleMask)
+    }
+
+    /// Keeps a moved or resized scenario window from sliding over the controls.
+    func constrained(_ frame: NSRect) -> NSRect {
+        var constrained = frame
+        constrained.size.width = min(constrained.width, scenarioArea.width)
+        constrained.size.height = min(constrained.height, scenarioArea.height)
+        constrained.origin.x = min(
+            max(constrained.minX, scenarioArea.minX),
+            scenarioArea.maxX - constrained.width
+        )
+        constrained.origin.y = min(
+            max(constrained.minY, scenarioArea.minY),
+            scenarioArea.maxY - constrained.height
+        )
+        return constrained
+    }
+}
+
 @MainActor
 final class FixtureController: NSObject, NSWindowDelegate {
     private var controlWindowController: NSWindowController?
     private var fixtureWindows: [NSWindowController] = []
     private var serial = 0
+    private let layout = FixtureLayout()
 
     func start() {
         let control = makeControlWindow()
@@ -49,9 +137,10 @@ final class FixtureController: NSObject, NSWindowDelegate {
             defer: false
         )
         window.title = "Tab-List Window Fixture Controls"
-        window.setFrameAutosaveName("WindowFixtureControls")
         window.contentView = makeControls()
-        window.center()
+        // Deliberately not autosaved: the controls have to land in their
+        // reserved column on every launch, on every screen size.
+        window.setFrame(layout.controlFrame, display: false)
         return window
     }
 
@@ -135,9 +224,17 @@ final class FixtureController: NSObject, NSWindowDelegate {
 
     @objc private func addUtilityPanel() {
         serial += 1
+        let styleMask: NSWindow.StyleMask = [
+            .titled, .closable, .utilityWindow, .nonactivatingPanel
+        ]
         let panel = NSPanel(
-            contentRect: NSRect(x: 220, y: 220, width: 320, height: 180),
-            styleMask: [.titled, .closable, .utilityWindow, .nonactivatingPanel],
+            contentRect: layout.scenarioContentRect(
+                width: 320,
+                height: 180,
+                styleMask: styleMask,
+                serial: serial
+            ),
+            styleMask: styleMask,
             backing: .buffered,
             defer: false
         )
@@ -152,9 +249,15 @@ final class FixtureController: NSObject, NSWindowDelegate {
 
     @objc private func addUnclosableWindow() {
         serial += 1
+        let styleMask: NSWindow.StyleMask = [.titled, .resizable]
         let window = NSWindow(
-            contentRect: NSRect(x: 280, y: 280, width: 440, height: 240),
-            styleMask: [.titled, .resizable],
+            contentRect: layout.scenarioContentRect(
+                width: 440,
+                height: 240,
+                styleMask: styleMask,
+                serial: serial
+            ),
+            styleMask: styleMask,
             backing: .buffered,
             defer: false
         )
@@ -297,7 +400,7 @@ final class FixtureController: NSObject, NSWindowDelegate {
         frame.origin.y += 29
         frame.size.width = max(360, frame.size.width - 43)
         frame.size.height = max(220, frame.size.height - 31)
-        window.setFrame(frame, display: true, animate: false)
+        window.setFrame(layout.constrained(frame), display: true, animate: false)
     }
 
     @objc private func addTenStandardWindows() {
@@ -339,9 +442,17 @@ final class FixtureController: NSObject, NSWindowDelegate {
     }
 
     private func makeStandardWindow(title: String) -> NSWindow {
+        let styleMask: NSWindow.StyleMask = [
+            .titled, .closable, .miniaturizable, .resizable
+        ]
         let window = NSWindow(
-            contentRect: NSRect(x: 180 + serial * 14, y: 180 + serial * 14, width: 520, height: 320),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            contentRect: layout.scenarioContentRect(
+                width: 520,
+                height: 320,
+                styleMask: styleMask,
+                serial: serial
+            ),
+            styleMask: styleMask,
             backing: .buffered,
             defer: false
         )
@@ -381,10 +492,10 @@ final class FixtureController: NSObject, NSWindowDelegate {
         let controller = NSWindowController(window: window)
         fixtureWindows.append(controller)
         controller.showWindow(nil)
-        // Scenario windows cascade across the screen and would otherwise bury
-        // the controls, leaving later buttons unclickable by hand and by test.
-        // Ordering only; the window level stays normal so Tab-List classifies
-        // the controls exactly like any other standard window.
+        // The layout already keeps scenario windows out of the control column;
+        // this only restores the controls after a tester drags a window over
+        // them. Ordering only; the window level stays normal so Tab-List
+        // classifies the controls exactly like any other standard window.
         controlWindowController?.window?.orderFront(nil)
     }
 
