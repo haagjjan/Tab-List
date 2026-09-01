@@ -35,7 +35,7 @@ struct SwitcherOpeningCandidatesTests {
 
     @Test
     func testCachedSnapshotImmediatelyProducesFilteredWindowMRUCandidates() {
-        var settings = SettingsV1.default
+        var settings = TabListSettings.default
         settings.screenScope = .pointerScreen
 
         let current = AppTestFixtures.window(

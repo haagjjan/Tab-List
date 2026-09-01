@@ -24,6 +24,18 @@ func XCTAssertEqual<T: Equatable>(
     #expect(first() == second(), sourceLocation: sourceLocation)
 }
 
+func XCTAssertEqual<T: BinaryFloatingPoint>(
+    _ first: @autoclosure () -> T,
+    _ second: @autoclosure () -> T,
+    accuracy: T,
+    sourceLocation: SourceLocation = #_sourceLocation
+) {
+    #expect(
+        abs(first() - second()) <= accuracy,
+        sourceLocation: sourceLocation
+    )
+}
+
 func XCTAssertNotEqual<T: Equatable>(
     _ first: @autoclosure () -> T,
     _ second: @autoclosure () -> T,
@@ -45,6 +57,38 @@ func XCTAssertGreaterThan<T: Comparable>(
     sourceLocation: SourceLocation = #_sourceLocation
 ) {
     #expect(first() > second(), sourceLocation: sourceLocation)
+}
+
+func XCTAssertGreaterThanOrEqual<T: Comparable>(
+    _ first: @autoclosure () -> T,
+    _ second: @autoclosure () -> T,
+    sourceLocation: SourceLocation = #_sourceLocation
+) {
+    #expect(first() >= second(), sourceLocation: sourceLocation)
+}
+
+func XCTAssertLessThanOrEqual<T: Comparable>(
+    _ first: @autoclosure () -> T,
+    _ second: @autoclosure () -> T,
+    sourceLocation: SourceLocation = #_sourceLocation
+) {
+    #expect(first() <= second(), sourceLocation: sourceLocation)
+}
+
+func XCTAssertThrowsError<T>(
+    _ expression: @autoclosure () throws -> T,
+    sourceLocation: SourceLocation = #_sourceLocation,
+    _ handler: (any Error) -> Void = { _ in }
+) {
+    do {
+        _ = try expression()
+        Issue.record(
+            "Expected an error to be thrown",
+            sourceLocation: sourceLocation
+        )
+    } catch {
+        handler(error)
+    }
 }
 
 func XCTFail(

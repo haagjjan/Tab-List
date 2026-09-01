@@ -6,14 +6,14 @@ import Testing
 struct SettingsTransactionTests {
     @Test
     func testFailedShortcutReplacementKeepsPreviousShortcutOnly() {
-        var previous = SettingsV1.default
+        var previous = TabListSettings.default
         previous.shortcut = ShortcutDefinition(
             keyCode: 49,
             modifiers: [.command, .option]
         )
-        var requested = SettingsV1.default
-        requested.opacity = 0.74
-        requested.presentation = .titles
+        var requested = TabListSettings.default
+        requested.theme = .dark
+        requested.includeMinimized = false
 
         let committed = SettingsTransaction.committed(
             previous: previous,
@@ -23,13 +23,13 @@ struct SettingsTransactionTests {
         )
 
         XCTAssertEqual(committed.shortcut, previous.shortcut)
-        XCTAssertEqual(committed.opacity, requested.opacity)
-        XCTAssertEqual(committed.presentation, requested.presentation)
+        XCTAssertEqual(committed.theme, requested.theme)
+        XCTAssertEqual(committed.includeMinimized, requested.includeMinimized)
     }
 
     @Test
     func testSuccessfulShortcutReplacementCommitsRequestedSettings() {
-        var requested = SettingsV1.default
+        var requested = TabListSettings.default
         requested.shortcut = ShortcutDefinition(
             keyCode: 49,
             modifiers: [.command, .option]
@@ -48,8 +48,8 @@ struct SettingsTransactionTests {
 
     @Test
     func testUnchangedShortcutDoesNotDependOnRegistrationResult() {
-        var requested = SettingsV1.default
-        requested.opacity = 0.93
+        var requested = TabListSettings.default
+        requested.theme = .light
 
         XCTAssertEqual(
             SettingsTransaction.committed(
