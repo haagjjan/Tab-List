@@ -5,11 +5,11 @@ import TabListCore
 /// shortcut replacement fails.
 enum SettingsTransaction {
     static func committed(
-        previous: SettingsV1,
-        requested: SettingsV1,
+        previous: TabListSettings,
+        requested: TabListSettings,
         shortcutRegistrationRequired: Bool,
         shortcutRegistrationSucceeded: Bool
-    ) -> SettingsV1 {
+    ) -> TabListSettings {
         guard shortcutRegistrationRequired,
               !shortcutRegistrationSucceeded else {
             return requested

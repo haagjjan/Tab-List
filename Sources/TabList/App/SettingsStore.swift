@@ -9,7 +9,7 @@ final class SettingsStore {
     }
 
     private let defaults: UserDefaults
-    private(set) var settings: SettingsV1
+    private(set) var settings: TabListSettings
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -33,7 +33,7 @@ final class SettingsStore {
         set { defaults.set(newValue, forKey: Key.completedOnboarding) }
     }
 
-    func update(_ settings: SettingsV1) {
+    func update(_ settings: TabListSettings) {
         let normalized = settings.normalized()
         self.settings = normalized
         try? Self.persist(normalized, to: defaults)
@@ -44,7 +44,7 @@ final class SettingsStore {
     }
 
     private static func persist(
-        _ settings: SettingsV1,
+        _ settings: TabListSettings,
         to defaults: UserDefaults
     ) throws {
         defaults.set(try SettingsPersistence.encode(settings), forKey: Key.payload)
