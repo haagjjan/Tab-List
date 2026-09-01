@@ -22,7 +22,8 @@ At the time these runbooks were created:
 - The candidate workflow expects a protected environment named `release` and
   nine release secrets. The separate no-rebuild publisher expects a protected
   `release-promotion` environment and no long-lived secrets.
-- The exact-build private WindowServer compatibility allowlists are empty.
+- The two unsupported read-only WindowServer capabilities are probe-gated at
+  runtime; there is no private activation path and no build allowlist to edit.
 - Tab-List is a direct-download application. It is not a Mac App Store app.
 
 ## What is not required
@@ -46,7 +47,7 @@ by earlier ones.
 | 2 | [Apple Developer and notarization](02_APPLE_DEVELOPER_AND_NOTARIZATION.md) | Active membership and protected Developer ID/notary credentials | Signed and notarized artifacts |
 | 3 | [Sparkle signing key](03_CREATE_AND_CUSTODY_SPARKLE_KEY.md) | One recoverable EdDSA update-signing root | Authenticated in-app updates |
 | 4 | [Initialize and secure GitHub](04_INITIALIZE_AND_SECURE_GITHUB.md) | Source is pushed; CI, environment, and security controls are active | Hosted CI and protected releases |
-| 5 | [Compatibility and private ABI](05_MACOS_COMPATIBILITY_AND_PRIVATE_ABI.md) | Exact macOS builds have reproducible fixture evidence | Safe per-build private capability allowlisting |
+| 5 | [Compatibility and private ABI](05_MACOS_COMPATIBILITY_AND_PRIVATE_ABI.md) | Exact macOS builds have reproducible fixture evidence | Confidence that discovery, activation, and degraded fallback are correct |
 | 6 | [Performance, accessibility, and hardware](06_PERFORMANCE_ACCESSIBILITY_HARDWARE_MATRIX.md) | Release budgets and inclusive behavior pass on real hardware | Evidence-based release approval |
 | 7 | [Signed beta and 1.0 acceptance](07_SIGNED_BETA_AND_1_0_RELEASE_ACCEPTANCE.md) | Two fresh-install passes and a verified beta-to-1.0 update | Public 1.0 publication |
 
