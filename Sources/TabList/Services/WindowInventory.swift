@@ -230,12 +230,19 @@ public actor WindowInventory: WindowInventoryProviding {
             return lhs.pid < rhs.pid
         }
 
+        // Accessibility returns nothing at all for an application whose windows
+        // all live on another Space, so the WindowServer supplies those.
+        let crossSpaceWindows = Dictionary(
+            grouping: windowServer.windowsAcrossSpaces(
+                ownedBy: Set(applications.map(\.pid))
+            ),
+            by: \.pid
+        )
+
         var records: [WindowRecord] = []
         for application in ordered {
-            guard let descriptors = inventory
-                .windowsByProcess[application.pid] else {
-                continue
-            }
+            let descriptors = inventory
+                .windowsByProcess[application.pid] ?? []
             for descriptor in descriptors {
                 let spaceIDs = queriesSpaces
                     && descriptor.identitySource == .windowServerID
@@ -256,6 +263,26 @@ public actor WindowInventory: WindowInventoryProviding {
                 case let .excluded(reason):
                     TabListLog.registry.debug(
                         "Excluded pid \(application.pid, privacy: .private(mask: .hash)) reason \(reason.diagnosticCode, privacy: .public)"
+                    )
+                }
+            }
+
+            for window in Self.windowsOnlyTheWindowServerSees(
+                crossSpaceWindows[application.pid] ?? [],
+                alreadyReportedBy: descriptors
+            ) {
+                switch WindowRecordAssembly.record(
+                    descriptor: Self.descriptor(for: window),
+                    application: application,
+                    ownPID: ownPID,
+                    spaceIDs: window.spaceIDs,
+                    displayID: geometry.displayID(containing: window.bounds)
+                ) {
+                case let .included(record):
+                    records.append(record)
+                case let .excluded(reason):
+                    TabListLog.registry.debug(
+                        "Excluded cross-Space pid \(application.pid, privacy: .private(mask: .hash)) reason \(reason.diagnosticCode, privacy: .public)"
                     )
                 }
             }
@@ -282,6 +309,53 @@ public actor WindowInventory: WindowInventoryProviding {
                 .processIdentifier == frontmostPID
         }
         return stillFrontmost ? focusedKey : nil
+    }
+
+    /// The WindowServer windows for one process that Accessibility did not
+    /// already report.
+    ///
+    /// Both sources key a window by its WindowServer identifier, so matching is
+    /// exact whenever Accessibility resolved real identifiers. When it fell back
+    /// to process-scoped ordinals the two cannot be matched at all, so a process
+    /// that already reported windows is left alone rather than risking a
+    /// duplicate row for every window it owns.
+    static func windowsOnlyTheWindowServerSees(
+        _ windows: [WindowServerWindow],
+        alreadyReportedBy descriptors: [AccessibilityWindowDescriptor]
+    ) -> [WindowServerWindow] {
+        guard !windows.isEmpty else { return [] }
+        guard descriptors.allSatisfy({
+            $0.identitySource == .windowServerID
+        }) else {
+            return []
+        }
+        let claimed = Set(descriptors.map(\.key.windowID))
+        return windows.filter { !claimed.contains($0.windowID) }
+    }
+
+    /// Presents a WindowServer window as an Accessibility descriptor so that one
+    /// classification and assembly path serves both sources.
+    ///
+    /// Role and subrole are genuinely unknown here; `WindowClassifier` treats a
+    /// missing role as acceptable rather than disqualifying, which is what lets
+    /// these windows through. Minimized and fullscreen windows never reach this
+    /// path — the WindowServer places them on no Space, so they are filtered out
+    /// before this point and continue to come from Accessibility.
+    static func descriptor(
+        for window: WindowServerWindow
+    ) -> AccessibilityWindowDescriptor {
+        AccessibilityWindowDescriptor(
+            key: WindowKey(pid: window.pid, windowID: window.windowID),
+            role: nil,
+            subrole: nil,
+            title: window.title,
+            bounds: window.bounds,
+            isMinimized: false,
+            isFullscreen: false,
+            isClosable: true,
+            isMain: false,
+            identitySource: .windowServerID
+        )
     }
 
     private func runningApplications() async -> [RunningApplicationDescriptor] {
