@@ -68,8 +68,12 @@ private enum Assembly {
 
 @Suite
 struct WindowRecordAssemblyTests {
+    /// Assembly only. This deliberately does not claim cross-desktop coverage:
+    /// it feeds a synthetic descriptor and never touches macOS Accessibility,
+    /// which is exactly why it stayed green while windows on other desktops
+    /// were invisible. See `CrossSpaceWindowMergeTests` for the merge itself.
     @Test
-    func testABrowserWindowOnAnotherSpaceStillBecomesARow() throws {
+    func testAWindowWithoutSpaceInformationStillBecomesARow() throws {
         let record = try XCTUnwrap(Assembly.assemble().record)
 
         XCTAssertEqual(record.applicationName, "Firefox")
