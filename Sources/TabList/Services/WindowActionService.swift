@@ -48,16 +48,22 @@ enum WindowClosePolicy {
 public final class WindowActionService: WindowActuating, @unchecked Sendable {
     private let registry: WindowRegistry
     private let accessibility: AccessibilityBridge
+    private let windowServer: WindowServerBridge
     private let focusTimeout: Duration
+    private let spaceSwitchTimeout: Duration
 
     public init(
         registry: WindowRegistry,
         accessibility: AccessibilityBridge,
-        focusTimeout: Duration = .milliseconds(1_200)
+        windowServer: WindowServerBridge,
+        focusTimeout: Duration = .milliseconds(1_200),
+        spaceSwitchTimeout: Duration = .milliseconds(1_500)
     ) {
         self.registry = registry
         self.accessibility = accessibility
+        self.windowServer = windowServer
         self.focusTimeout = focusTimeout
+        self.spaceSwitchTimeout = spaceSwitchTimeout
     }
 
     public func activate(
@@ -75,6 +81,20 @@ public final class WindowActionService: WindowActuating, @unchecked Sendable {
                 preparation = await accessibility.unminimize(key)
             }
             guard preparation.isSuccess else { return map(preparation) }
+        }
+
+        // Accessibility hands out no element for a window on another Space, so
+        // the application is activated first to bring that Space forward and the
+        // window is only raised once macOS has actually switched. The refresh
+        // afterwards is what re-enumerates the window and caches its element.
+        if isOnAnotherSpace(record) {
+            await activateApplication(pid: key.pid)
+            await waitForSpace(record.spaceIDs, timeout: spaceSwitchTimeout)
+            accessibility.invalidate(pid: key.pid)
+            _ = await registry.refresh()
+            guard await resolveRecord(for: target) != nil else {
+                return .targetMissing
+            }
         }
 
         _ = await accessibility.activate(key)
@@ -108,11 +128,26 @@ public final class WindowActionService: WindowActuating, @unchecked Sendable {
         _ target: WindowActionTarget
     ) async -> WindowActionResult {
         let key = target.key
-        let snapshot = await registry.refreshSnapshot()
-        guard let record = snapshot.window(for: key),
+        var snapshot = await registry.refreshSnapshot()
+        guard var record = snapshot.window(for: key),
               target.matches(record) else {
             return .targetMissing
         }
+
+        // Closing needs an Accessibility element just as activating does, so a
+        // window on another Space is brought forward first. The snapshot is
+        // retaken afterwards because the window count drives quit-vs-close.
+        if isOnAnotherSpace(record) {
+            let activation = await activate(target)
+            guard case .success = activation else { return activation }
+            snapshot = await registry.refreshSnapshot()
+            guard let activated = snapshot.window(for: key),
+                  target.matches(activated) else {
+                return .targetMissing
+            }
+            record = activated
+        }
+
         let applicationWindows = snapshot.windows.filter { $0.id.pid == key.pid }
         if WindowClosePolicy.disposition(
             for: record,
@@ -193,6 +228,41 @@ public final class WindowActionService: WindowActuating, @unchecked Sendable {
 
         await activateApplication(pid: record.id.pid)
         return .confirmationRequired
+    }
+
+    /// Mirrors the Space narrowing in `WindowFilter` so that a window the
+    /// switcher shows from another desktop is judged the same way here.
+    private func isOnAnotherSpace(_ record: WindowRecord) -> Bool {
+        guard !record.spaceIDs.isEmpty else { return false }
+        let visible = windowServer.visibleSpaceIDs()
+        guard !visible.isEmpty else { return false }
+        return Set(record.spaceIDs).isDisjoint(with: visible)
+    }
+
+    /// Waits for macOS to finish switching desktops. Returning on timeout is
+    /// deliberate: the activation attempt still proceeds and reports its own
+    /// outcome rather than failing here on a guess.
+    private func waitForSpace(
+        _ spaceIDs: [UInt64],
+        timeout: Duration
+    ) async {
+        let targets = Set(spaceIDs)
+        guard !targets.isEmpty else { return }
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        repeat {
+            if !windowServer.visibleSpaceIDs().isDisjoint(with: targets) {
+                return
+            }
+            do {
+                try await clock.sleep(for: .milliseconds(50))
+            } catch {
+                return
+            }
+        } while clock.now < deadline
+        TabListLog.windowActions.warning(
+            "Desktop switch did not complete within the timeout"
+        )
     }
 
     private func activateApplication(pid: pid_t) async {
