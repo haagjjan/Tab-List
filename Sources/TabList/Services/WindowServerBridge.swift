@@ -39,6 +39,29 @@ public struct WindowServerCapabilityReport: Codable, Equatable, Sendable {
     }
 }
 
+/// One window as the WindowServer sees it, on any Space.
+public struct WindowServerWindow: Equatable, Sendable {
+    public let windowID: CGWindowID
+    public let pid: pid_t
+    public let bounds: CGRect
+    public let title: String
+    public let spaceIDs: [UInt64]
+
+    public init(
+        windowID: CGWindowID,
+        pid: pid_t,
+        bounds: CGRect,
+        title: String,
+        spaceIDs: [UInt64]
+    ) {
+        self.windowID = windowID
+        self.pid = pid
+        self.bounds = bounds
+        self.title = title
+        self.spaceIDs = spaceIDs
+    }
+}
+
 /// The sole owner of unsupported WindowServer entry points.
 ///
 /// Every private symbol is read-only and is called only after a harmless probe
@@ -269,6 +292,64 @@ public final class WindowServerBridge: @unchecked Sendable {
             return []
         }
         return Self.currentSpaceIDs(from: displays)
+    }
+
+    /// Every window the WindowServer attributes to a Space, including Spaces
+    /// that are not currently visible.
+    ///
+    /// This exists because `AXWindows` returns nothing at all for an application
+    /// whose windows all live on another Space, so Accessibility on its own
+    /// cannot see other desktops. Callers pass the processes they already
+    /// consider switchable, which keeps the per-window Space queries bounded.
+    ///
+    /// A window the WindowServer places on no Space is either chrome — menu-bar
+    /// overlays, sheets, panels — or minimized. Both are skipped here: the
+    /// Accessibility pass reports them with far better fidelity, including the
+    /// role and subrole this list cannot provide.
+    public func windowsAcrossSpaces(
+        ownedBy pids: Set<pid_t>
+    ) -> [WindowServerWindow] {
+        guard spacesAreEnabled, !pids.isEmpty else { return [] }
+        guard let info = CGWindowListCopyWindowInfo(
+            [.optionAll, .excludeDesktopElements],
+            kCGNullWindowID
+        ) as? [[String: Any]] else {
+            return []
+        }
+
+        var windows: [WindowServerWindow] = []
+        for entry in info {
+            guard (entry[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+                  let pid = (entry[kCGWindowOwnerPID as String] as? NSNumber)?
+                      .int32Value,
+                  pids.contains(pid),
+                  let identifier = (
+                      entry[kCGWindowNumber as String] as? NSNumber
+                  )?.uint32Value,
+                  identifier != 0,
+                  let boundsDictionary = entry[kCGWindowBounds as String]
+                      as? NSDictionary,
+                  let bounds = CGRect(
+                      dictionaryRepresentation: boundsDictionary as CFDictionary
+                  )
+            else {
+                continue
+            }
+
+            let spaceIDs = spaceIDs(forWindowID: identifier)
+            guard !spaceIDs.isEmpty else { continue }
+
+            windows.append(
+                WindowServerWindow(
+                    windowID: identifier,
+                    pid: pid,
+                    bounds: bounds,
+                    title: entry[kCGWindowName as String] as? String ?? "",
+                    spaceIDs: spaceIDs
+                )
+            )
+        }
+        return windows
     }
 
     private var spacesAreEnabled: Bool {

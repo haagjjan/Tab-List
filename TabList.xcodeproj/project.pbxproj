@@ -32,6 +32,7 @@
 		3C0BF2D09CE85271A29BE923 /* WindowFiltering.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF590D2E3C2F284825AAB9AF /* WindowFiltering.swift */; };
 		3CDE9B283D8F35A8000907A9 /* PrivacyRedactionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C74B17241AC7D5DED16B57BE /* PrivacyRedactionTests.swift */; };
 		3E547596AB6DA7AAD79E4398 /* WindowClassificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A610C925D18670298C184417 /* WindowClassificationTests.swift */; };
+		420304A4FA4285E5FD8802E9 /* CrossSpaceWindowMergeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05C98E29BDD1CABE5F01911D /* CrossSpaceWindowMergeTests.swift */; };
 		43406330D3BB7DA51D1821BE /* SwitcherSessionReducer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4A7034B248A502767E10069 /* SwitcherSessionReducer.swift */; };
 		441B898BDE4D8CE1FFD84267 /* PermissionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFD063834C1C74D254E3CA84 /* PermissionService.swift */; };
 		47F4571377DD20E7212AB216 /* WindowClassification.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C5F0E8119880CA972CE12EA /* WindowClassification.swift */; };
@@ -174,6 +175,7 @@
 		0287D64972EE7D7F658EAD62 /* 04-panel-top-spacing.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "04-panel-top-spacing.png"; sourceTree = "<group>"; };
 		03E43411D136DABE5CF4C6E9 /* 05_MACOS_COMPATIBILITY_AND_PRIVATE_ABI.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = 05_MACOS_COMPATIBILITY_AND_PRIVATE_ABI.md; sourceTree = "<group>"; };
 		05654ECE219FAF17A345F328 /* UpdateController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateController.swift; sourceTree = "<group>"; };
+		05C98E29BDD1CABE5F01911D /* CrossSpaceWindowMergeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CrossSpaceWindowMergeTests.swift; sourceTree = "<group>"; };
 		0673B165D43F6D399E63D04D /* PrivacyRedaction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivacyRedaction.swift; sourceTree = "<group>"; };
 		09D9FD2B2B3E5F0F1A39144A /* DiagnosticsServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsServiceTests.swift; sourceTree = "<group>"; };
 		0A4FF8DE9F1AA37EA1B2125E /* ShortcutDefinition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutDefinition.swift; sourceTree = "<group>"; };
@@ -541,6 +543,7 @@
 		7402025ED2AFDEA563958141 /* TabListTests */ = {
 			isa = PBXGroup;
 			children = (
+				05C98E29BDD1CABE5F01911D /* CrossSpaceWindowMergeTests.swift */,
 				09D9FD2B2B3E5F0F1A39144A /* DiagnosticsServiceTests.swift */,
 				0F1BE86F3E1DAC597A7581A0 /* GlobalFocusObservationGateTests.swift */,
 				3CA43A43AC6E16F5301701CC /* HoldCycleTimingTests.swift */,
@@ -1008,6 +1011,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				420304A4FA4285E5FD8802E9 /* CrossSpaceWindowMergeTests.swift in Sources */,
 				B101B6AB8787491962851555 /* DiagnosticsServiceTests.swift in Sources */,
 				18A179C2029E09AC1EFD23DC /* GlobalFocusObservationGateTests.swift in Sources */,
 				53866160FE6316E1C343CF61 /* HoldCycleTimingTests.swift in Sources */,

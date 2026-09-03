@@ -45,15 +45,28 @@ public struct AccessibilityWindowDescriptor: Equatable, Sendable {
 public struct AccessibilityWindowInventory: Sendable {
     /// Front-to-back per process, matching the order `AXWindows` reports.
     public let windowsByProcess: [pid_t: [AccessibilityWindowDescriptor]]
+    /// Processes whose Accessibility lane failed or timed out. Their absence
+    /// from `windowsByProcess` says nothing about whether they have windows.
+    public let unavailableProcesses: Set<pid_t>
     public let isTrusted: Bool
 
     public init(
         windowsByProcess: [pid_t: [AccessibilityWindowDescriptor]],
+        unavailableProcesses: Set<pid_t> = [],
         isTrusted: Bool
     ) {
         self.windowsByProcess = windowsByProcess
+        self.unavailableProcesses = unavailableProcesses
         self.isTrusted = isTrusted
     }
+}
+
+/// Separates an application that genuinely exposes no windows from one whose
+/// Accessibility lane failed or timed out. The two used to be indistinguishable,
+/// which let applications vanish from the switcher without leaving a trace.
+enum AccessibilityWindowLookup: Sendable {
+    case windows([AccessibilityWindowDescriptor])
+    case unavailable(AXError)
 }
 
 public enum AccessibilityOperationResult: Sendable {
@@ -128,7 +141,7 @@ public final class AccessibilityBridge: @unchecked Sendable {
         }
 
         return await withTaskGroup(
-            of: (pid_t, [AccessibilityWindowDescriptor]).self
+            of: (pid_t, AccessibilityWindowLookup).self
         ) { group in
             for pid in processIDs where pid > 0 {
                 group.addTask { [self] in
@@ -136,12 +149,29 @@ public final class AccessibilityBridge: @unchecked Sendable {
                 }
             }
             var result: [pid_t: [AccessibilityWindowDescriptor]] = [:]
+            var unavailable: Set<pid_t> = []
             result.reserveCapacity(processIDs.count)
-            for await (pid, descriptors) in group where !descriptors.isEmpty {
-                result[pid] = descriptors
+            for await (pid, lookup) in group {
+                switch lookup {
+                case let .windows(descriptors):
+                    guard !descriptors.isEmpty else { continue }
+                    result[pid] = descriptors
+                case let .unavailable(status):
+                    // Never drop this silently: an unanswered lane is why an
+                    // application disappears from the switcher entirely.
+                    unavailable.insert(pid)
+                    TabListLog.registry.warning(
+                        """
+                        Accessibility lane unavailable for pid \
+                        \(pid, privacy: .public) status \
+                        \(status.rawValue, privacy: .public)
+                        """
+                    )
+                }
             }
             return AccessibilityWindowInventory(
                 windowsByProcess: result,
+                unavailableProcesses: unavailable,
                 isTrusted: true
             )
         }
@@ -277,23 +307,28 @@ public final class AccessibilityBridge: @unchecked Sendable {
 
     private func windows(
         for pid: pid_t
-    ) async -> [AccessibilityWindowDescriptor] {
+    ) async -> AccessibilityWindowLookup {
         await perform(on: pid) { [self] in
             let application = configuredApplication(pid: pid)
-            let elements = copyElements(
-                application,
-                attribute: kAXWindowsAttribute as CFString
-            )
+            let elements: [AXUIElement]
+            switch copyWindowElements(application) {
+            case let .elements(found):
+                elements = found
+            case let .failed(status):
+                // Leave the identity table alone: the window list is unknown,
+                // not empty, so pruning would discard live identities.
+                return .unavailable(status)
+            }
             guard !elements.isEmpty else {
                 pruneIdentities(pid: pid, keeping: [])
-                return []
+                return .windows([])
             }
 
             let raw = elements.map(readWindow)
             let survivors = Self.withoutBackgroundNativeTabs(raw)
             pruneIdentities(pid: pid, keeping: elements)
 
-            return survivors.map { window in
+            return .windows(survivors.map { window in
                 let identity = assignIdentifier(
                     to: window.element,
                     pid: pid,
@@ -313,7 +348,7 @@ public final class AccessibilityBridge: @unchecked Sendable {
                     isMain: window.isMain,
                     identitySource: identity.source
                 )
-            }
+            })
         }
     }
 
@@ -537,6 +572,35 @@ private func copyElement(
         return nil
     }
     return unsafeDowncast(value, to: AXUIElement.self)
+}
+
+/// `AXError` does not conform to `Error`, so this carries the status directly
+/// rather than through `Result`.
+private enum WindowElementLookup {
+    case elements([AXUIElement])
+    case failed(AXError)
+}
+
+/// Like `copyElements`, but keeps the failure status instead of flattening it
+/// into an empty array. `noValue` and `attributeUnsupported` are real answers
+/// meaning "this process exposes no window list", not failures.
+private func copyWindowElements(
+    _ application: AXUIElement
+) -> WindowElementLookup {
+    var value: CFTypeRef?
+    let status = AXUIElementCopyAttributeValue(
+        application,
+        kAXWindowsAttribute as CFString,
+        &value
+    )
+    switch status {
+    case .success:
+        return .elements((value as? [AXUIElement]) ?? [])
+    case .noValue, .attributeUnsupported:
+        return .elements([])
+    default:
+        return .failed(status)
+    }
 }
 
 private func copyElements(
