@@ -154,7 +154,8 @@ final class TabListApplication: NSObject, NSApplicationDelegate {
             focusHistoryProvider: registry,
             windowActions: WindowActionService(
                 registry: registry,
-                accessibility: accessibility
+                accessibility: accessibility,
+                windowServer: windowServer
             ),
             shortcutService: shortcutService,
             iconCache: AppIconCache(),
